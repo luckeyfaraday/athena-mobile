@@ -1,0 +1,18 @@
+{
+  "name": "Athena Mobile",
+  "short_name": "Athena",
+  "description": "Mobile companion for Athena live agent control over a private network.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#101512",
+  "theme_color": "#101512",
+  "orientation": "portrait",
+  "icons": [
+    {
+      "src": "/athena-mobile.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

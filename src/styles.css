@@ -1,0 +1,471 @@
+:root {
+  color-scheme: dark;
+  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  background: #101512;
+  color: #f3efe1;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-width: 320px;
+  min-height: 100vh;
+  background:
+    linear-gradient(180deg, rgba(18, 44, 33, 0.88), rgba(16, 21, 18, 1) 360px),
+    #101512;
+}
+
+button,
+textarea {
+  font: inherit;
+}
+
+button {
+  -webkit-tap-highlight-color: transparent;
+}
+
+.appShell {
+  width: min(100%, 620px);
+  min-height: 100vh;
+  margin: 0 auto;
+  padding: max(18px, env(safe-area-inset-top)) 14px max(24px, env(safe-area-inset-bottom));
+}
+
+.topBar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  margin-bottom: 16px;
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  gap: 11px;
+}
+
+.brandMark {
+  display: grid;
+  place-items: center;
+  flex: 0 0 auto;
+  width: 42px;
+  height: 42px;
+  border: 1px solid rgba(217, 196, 138, 0.42);
+  border-radius: 8px;
+  background: #d9c48a;
+  color: #101512;
+  font-weight: 900;
+}
+
+.brand strong,
+.brand span {
+  display: block;
+}
+
+.brand strong {
+  font-size: 1rem;
+}
+
+.brand span {
+  color: #aab7ad;
+  font-size: 0.78rem;
+}
+
+.iconButton,
+.dangerIconButton,
+.primaryButton,
+.kindButton,
+.segmented button,
+.terminalRow {
+  border: 1px solid rgba(243, 239, 225, 0.12);
+  color: #f3efe1;
+  background: rgba(255, 255, 255, 0.045);
+}
+
+.iconButton {
+  display: grid;
+  place-items: center;
+  width: 42px;
+  height: 42px;
+  border-radius: 8px;
+}
+
+.segmented {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 6px;
+  margin-bottom: 12px;
+  padding: 4px;
+  border: 1px solid rgba(243, 239, 225, 0.1);
+  border-radius: 8px;
+  background: rgba(5, 8, 7, 0.34);
+}
+
+.segmented button {
+  display: flex;
+  min-width: 0;
+  height: 40px;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  border-radius: 6px;
+  font-size: 0.82rem;
+}
+
+.segmented button.active,
+.kindButton.active,
+.terminalRow.active {
+  border-color: rgba(104, 196, 255, 0.55);
+  background: rgba(104, 196, 255, 0.12);
+}
+
+.errorBanner {
+  margin-bottom: 12px;
+  padding: 10px 12px;
+  border: 1px solid rgba(255, 116, 116, 0.35);
+  border-radius: 8px;
+  background: rgba(135, 34, 34, 0.22);
+  color: #ffd8d8;
+  font-size: 0.86rem;
+}
+
+.panel {
+  padding: 14px;
+  border: 1px solid rgba(243, 239, 225, 0.12);
+  border-radius: 8px;
+  background: rgba(16, 21, 18, 0.86);
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.22);
+}
+
+.sectionHeader {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+
+.sectionHeader.compact {
+  margin: 18px 0 8px;
+}
+
+.eyebrow {
+  display: block;
+  margin-bottom: 2px;
+  color: #9fb0a6;
+  font-size: 0.7rem;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+h1,
+h2 {
+  margin: 0;
+  line-height: 1.1;
+  letter-spacing: 0;
+}
+
+h1 {
+  font-size: 1.42rem;
+}
+
+h2 {
+  font-size: 1.05rem;
+}
+
+.metricsGrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.metric {
+  min-height: 122px;
+  padding: 11px;
+  border: 1px solid rgba(243, 239, 225, 0.1);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.metricIcon {
+  display: inline-grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  margin-bottom: 10px;
+  border-radius: 7px;
+  background: rgba(217, 196, 138, 0.16);
+  color: #d9c48a;
+}
+
+.metric span,
+.metric strong,
+.metric small {
+  display: block;
+}
+
+.metric span:not(.metricIcon) {
+  color: #aab7ad;
+  font-size: 0.75rem;
+}
+
+.metric strong {
+  margin-top: 3px;
+  font-size: 1.08rem;
+}
+
+.metric small {
+  margin-top: 7px;
+  overflow-wrap: anywhere;
+  color: #7f8e85;
+  font-size: 0.71rem;
+  line-height: 1.35;
+}
+
+.workspaceList,
+.terminalList {
+  display: grid;
+  gap: 8px;
+}
+
+.workspaceRow {
+  display: grid;
+  gap: 3px;
+  padding: 11px;
+  border-left: 3px solid #d9c48a;
+  background: rgba(255, 255, 255, 0.035);
+}
+
+.workspaceRow span,
+.workspaceRow small {
+  color: #9fb0a6;
+  font-size: 0.78rem;
+}
+
+.workspaceRow small {
+  overflow-wrap: anywhere;
+}
+
+.terminalRow {
+  display: grid;
+  grid-template-columns: 10px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-height: 62px;
+  padding: 10px;
+  border-radius: 8px;
+  text-align: left;
+}
+
+.terminalRow strong,
+.terminalRow small {
+  display: block;
+}
+
+.terminalRow small {
+  margin-top: 3px;
+  color: #94a49a;
+}
+
+.providerDot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: #d9c48a;
+}
+
+.providerDot.codex {
+  background: #68c4ff;
+}
+
+.providerDot.opencode {
+  background: #7bd88f;
+}
+
+.providerDot.claude {
+  background: #ffb86b;
+}
+
+.providerDot.hermes {
+  background: #c7a4ff;
+}
+
+.providerDot.shell {
+  background: #9fb0a6;
+}
+
+.statusLabel,
+.countPill {
+  border-radius: 999px;
+  padding: 4px 8px;
+  background: rgba(123, 216, 143, 0.12);
+  color: #a8f0b8;
+  font-size: 0.7rem;
+  font-weight: 800;
+}
+
+.statusLabel.failed {
+  background: rgba(255, 116, 116, 0.12);
+  color: #ffb8b8;
+}
+
+.statusLabel.exited {
+  background: rgba(159, 176, 166, 0.14);
+  color: #d2dbd6;
+}
+
+.controlSurface {
+  display: grid;
+  gap: 11px;
+  margin-top: 14px;
+  padding-top: 14px;
+  border-top: 1px solid rgba(243, 239, 225, 0.1);
+}
+
+.controlTitle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.dangerIconButton,
+.primaryButton,
+.kindButton {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  min-height: 42px;
+  border-radius: 8px;
+  font-weight: 800;
+}
+
+.dangerIconButton {
+  padding: 0 11px;
+  color: #ffd0d0;
+  background: rgba(150, 44, 44, 0.18);
+}
+
+.primaryButton {
+  width: 100%;
+  background: #68c4ff;
+  color: #071017;
+  border-color: transparent;
+}
+
+.terminalTail {
+  min-height: 104px;
+  padding: 11px;
+  border: 1px solid rgba(104, 196, 255, 0.16);
+  border-radius: 8px;
+  background: #07100d;
+  color: #cfe7dc;
+}
+
+.terminalTail span {
+  color: #68c4ff;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.72rem;
+}
+
+.terminalTail pre {
+  margin: 8px 0 0;
+  max-height: 360px;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  color: #dce8e1;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.84rem;
+  line-height: 1.45;
+}
+
+.promptBox {
+  display: grid;
+  gap: 7px;
+}
+
+.promptBox span {
+  color: #aab7ad;
+  font-size: 0.76rem;
+  font-weight: 800;
+}
+
+.promptBox textarea {
+  width: 100%;
+  min-height: 112px;
+  resize: vertical;
+  border: 1px solid rgba(243, 239, 225, 0.12);
+  border-radius: 8px;
+  padding: 11px;
+  background: rgba(255, 255, 255, 0.045);
+  color: #f3efe1;
+  line-height: 1.45;
+}
+
+.kindGrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.kindButton {
+  min-width: 0;
+}
+
+.workspaceHint {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 10px 0 13px;
+  padding: 10px;
+  border: 1px solid rgba(217, 196, 138, 0.16);
+  border-radius: 8px;
+  color: #d8d0b5;
+  background: rgba(217, 196, 138, 0.08);
+  font-size: 0.76rem;
+}
+
+.workspaceHint span {
+  overflow-wrap: anywhere;
+}
+
+.emptyText {
+  color: #9fb0a6;
+  font-size: 0.86rem;
+}
+
+button:disabled {
+  cursor: not-allowed;
+  opacity: 0.58;
+}
+
+button:not(:disabled) {
+  cursor: pointer;
+}
+
+button:focus-visible,
+textarea:focus-visible {
+  outline: 2px solid #68c4ff;
+  outline-offset: 2px;
+}
+
+@media (min-width: 720px) {
+  .appShell {
+    padding-top: 28px;
+  }
+
+  .panel {
+    padding: 18px;
+  }
+}
