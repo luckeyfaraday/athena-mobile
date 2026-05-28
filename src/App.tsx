@@ -31,13 +31,13 @@ export function App() {
   const [error, setError] = useState<string | null>(null);
 
   const selectedTerminal = snapshot?.terminals.find((entry) => entry.id === selectedTerminalId) ?? snapshot?.terminals[0] ?? null;
-  const primaryWorkspace = snapshot?.workspaces[0]?.path || "/home/alan/home_ai/projects/context-workspace";
+  const primaryWorkspace = selectedTerminal?.workspace || snapshot?.workspaces[0]?.path || config.projectDir;
 
   async function refresh() {
     setBusy(true);
     setError(null);
     try {
-      const next = await client.snapshot(primaryWorkspace);
+      const next = await client.snapshot(primaryWorkspace || undefined);
       setSnapshot(next);
       setSelectedTerminalId((current) => current ?? next.terminals[0]?.id ?? null);
     } catch (refreshError) {
@@ -90,7 +90,7 @@ export function App() {
   }
 
   async function launchTerminal() {
-    if (!launchTask.trim()) return;
+    if (!launchTask.trim() || !primaryWorkspace) return;
     setBusy(true);
     setError(null);
     try {
@@ -235,7 +235,7 @@ export function App() {
             <Command size={16} />
             <span>{primaryWorkspace}</span>
           </div>
-          <button className="primaryButton" type="button" onClick={launchTerminal} disabled={busy || !launchTask.trim()}>
+          <button className="primaryButton" type="button" onClick={launchTerminal} disabled={busy || !launchTask.trim() || !primaryWorkspace}>
             <Play size={17} /> Launch {labelForKind(launchKind)}
           </button>
         </section>

@@ -6,6 +6,7 @@ export type AppConfig = {
   mode: AthenaMode;
   backendUrl: string;
   controlUrl: string;
+  projectDir: string;
   token: string;
 };
 
@@ -15,6 +16,7 @@ export function readConfig(): AppConfig {
     mode,
     backendUrl: trimSlash(import.meta.env.VITE_ATHENA_BACKEND_URL || (mode === "live" ? "/athena-backend" : "")),
     controlUrl: trimSlash(import.meta.env.VITE_ATHENA_CONTROL_URL || (mode === "live" ? "/athena-control" : "")),
+    projectDir: import.meta.env.VITE_ATHENA_PROJECT_DIR || "",
     token: import.meta.env.VITE_ATHENA_TOKEN || "",
   };
 }

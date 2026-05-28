@@ -37,6 +37,7 @@ Copy `.env.example` to `.env.local`.
 VITE_ATHENA_MODE=live
 VITE_ATHENA_BACKEND_URL=
 VITE_ATHENA_CONTROL_URL=
+VITE_ATHENA_PROJECT_DIR=
 VITE_ATHENA_TOKEN=
 ```
 
@@ -44,6 +45,8 @@ Modes:
 
 - `demo`: explicit local fixture mode for UI development.
 - `live`: call the configured Athena backend and Electron control URLs.
+
+Set `VITE_ATHENA_PROJECT_DIR` to the local Athena workspace path used for session history and new terminal launches before the app has discovered active workspaces.
 
 In live mode, blank URLs use the same-origin Vite proxy. The proxy reads Athena's existing discovery files:
 
