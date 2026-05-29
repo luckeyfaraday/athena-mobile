@@ -65,13 +65,10 @@ button:disabled { opacity: 0.42; cursor: not-allowed; }
 .brandMark {
   width: 30px;
   height: 30px;
-  display: grid;
-  place-items: center;
   border-radius: 7px;
   border: 1px solid var(--line-strong);
-  background: var(--panel-2);
-  color: var(--text);
-  font-weight: 700;
+  object-fit: cover;
+  flex-shrink: 0;
 }
 .brand strong { display: block; font-size: 14px; font-weight: 600; letter-spacing: 0.02em; }
 .brand span { display: block; color: var(--muted); font-size: 11px; }

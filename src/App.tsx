@@ -180,7 +180,7 @@ export function App() {
     <div className="appShell">
       <header className="topBar">
         <div className="brand">
-          <span className="brandMark">A</span>
+          <img className="brandMark" src="/athena-icon-256.png" alt="Athena" width={30} height={30} />
           <div>
             <strong>Athena</strong>
             <span>{config.mode === "live" ? "Live control" : "Demo mode"}</span>
