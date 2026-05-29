@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { Terminal, type ITheme } from "@xterm/xterm";
+import { CanvasAddon } from "@xterm/addon-canvas";
 import "@xterm/xterm/css/xterm.css";
 
 type StreamState = "connecting" | "live" | "exited" | "error";
@@ -9,17 +10,27 @@ type Props = {
   streamUrl: string | null;
   /** Stable identity so the terminal is recreated when the session changes. */
   sessionId: string;
+  /** Raw keystroke bytes from xterm (Enter, arrows, control codes), sent to the PTY verbatim. */
+  onInput: (data: string) => void;
 };
 
-// The control server spawns PTYs at 96 columns; rendering at that width and
-// scrolling horizontally preserves agent TUIs exactly (resizing the shared PTY
-// would disrupt the desktop view, and there is no remote resize endpoint).
+// The control server spawns PTYs at 96 columns and the agent TUIs (Claude Code,
+// Codex) draw their frames with absolute cursor positioning at that width — so
+// any narrower grid corrupts the layout, and there is no remote resize endpoint.
+// We therefore render the real 96 columns and scroll horizontally, at a readable
+// font, with the canvas renderer keeping every glyph crisply aligned.
 const TERMINAL_COLS = 96;
 const FONT_SIZE = 11;
 const LINE_HEIGHT = 1.2;
+const MONO_FONT = "ui-monospace, 'SF Mono', Menlo, Consolas, monospace";
 
-export function MobileTerminal({ streamUrl, sessionId }: Props) {
+export function MobileTerminal({ streamUrl, sessionId, onInput }: Props) {
   const mountRef = useRef<HTMLDivElement | null>(null);
+  const terminalRef = useRef<Terminal | null>(null);
+  // Hold the latest onInput so the data handler isn't baked into the mount effect
+  // (which would otherwise tear down and recreate the terminal on every render).
+  const onInputRef = useRef(onInput);
+  onInputRef.current = onInput;
   const [state, setState] = useState<StreamState>("connecting");
 
   useEffect(() => {
@@ -28,9 +39,11 @@ export function MobileTerminal({ streamUrl, sessionId }: Props) {
 
     const terminal = new Terminal({
       cols: TERMINAL_COLS,
-      cursorBlink: false,
-      disableStdin: true,
-      fontFamily: "ui-monospace, 'SF Mono', Menlo, Consolas, monospace",
+      cursorBlink: true,
+      // stdin enabled: keystrokes flow out via onData and are written to the PTY.
+      // xterm does not echo locally — the PTY echoes back through the SSE stream.
+      disableStdin: false,
+      fontFamily: MONO_FONT,
       fontSize: FONT_SIZE,
       lineHeight: LINE_HEIGHT,
       scrollback: 5000,
@@ -38,7 +51,20 @@ export function MobileTerminal({ streamUrl, sessionId }: Props) {
       theme: readTerminalTheme(),
     });
     terminal.open(mount);
+    // Canvas renderer: the DOM renderer accumulates sub-pixel rounding error
+    // across the 96 narrow cells, dropping/overlapping glyphs (the misaligned,
+    // run-together text). The canvas renderer paints each cell at an exact
+    // integer offset instead. Load after open().
+    try {
+      terminal.loadAddon(new CanvasAddon());
+    } catch {
+      // Canvas context unavailable (rare on mobile) — fall back to the DOM renderer.
+    }
+    terminalRef.current = terminal;
+    const dataSub = terminal.onData((data) => onInputRef.current(data));
 
+    // Keep 96 columns fixed (so TUIs render correctly) and only grow the row
+    // count to fill the available height; re-run on layout changes.
     const fitRows = () => {
       const cellHeight = FONT_SIZE * LINE_HEIGHT;
       const rows = Math.max(6, Math.floor(mount.clientHeight / cellHeight));
@@ -47,6 +73,45 @@ export function MobileTerminal({ streamUrl, sessionId }: Props) {
     fitRows();
     const observer = new ResizeObserver(fitRows);
     observer.observe(mount);
+
+    // Full-screen TUIs (Claude Code) enable mouse reporting, so xterm consumes
+    // touch drags (preventDefault) and the container never scrolls — unlike
+    // shell/Codex. We drive the horizontal pan ourselves in the capture phase:
+    // a mostly-horizontal swipe scrolls the 96-column view and is withheld from
+    // xterm; taps (focus) and vertical drags (scrollback) still reach it.
+    let startX = 0;
+    let startY = 0;
+    let startScroll = 0;
+    let panning = false;
+    let decided = false;
+    const onTouchStart = (event: TouchEvent) => {
+      if (event.touches.length !== 1) return;
+      startX = event.touches[0].clientX;
+      startY = event.touches[0].clientY;
+      startScroll = mount.scrollLeft;
+      panning = false;
+      decided = false;
+    };
+    const onTouchMove = (event: TouchEvent) => {
+      if (event.touches.length !== 1) return;
+      const dx = event.touches[0].clientX - startX;
+      const dy = event.touches[0].clientY - startY;
+      if (!decided) {
+        if (Math.abs(dx) > 8 && Math.abs(dx) > Math.abs(dy)) {
+          panning = true;
+          decided = true;
+        } else if (Math.abs(dy) > 8) {
+          decided = true; // vertical intent — hand it to xterm
+        }
+      }
+      if (panning) {
+        mount.scrollLeft = startScroll - dx;
+        event.preventDefault();
+        event.stopPropagation();
+      }
+    };
+    mount.addEventListener("touchstart", onTouchStart, { capture: true, passive: true });
+    mount.addEventListener("touchmove", onTouchMove, { capture: true, passive: false });
 
     let source: EventSource | null = null;
     if (streamUrl) {
@@ -79,15 +144,23 @@ export function MobileTerminal({ streamUrl, sessionId }: Props) {
     }
 
     return () => {
+      dataSub.dispose();
       observer.disconnect();
+      mount.removeEventListener("touchstart", onTouchStart, { capture: true });
+      mount.removeEventListener("touchmove", onTouchMove, { capture: true });
       source?.close();
       terminal.dispose();
+      terminalRef.current = null;
     };
   }, [sessionId, streamUrl]);
 
+  // Tapping the terminal focuses xterm's hidden textarea, which raises the mobile
+  // soft keyboard so typed characters reach the PTY.
+  const focusTerminal = () => terminalRef.current?.focus();
+
   return (
     <div className="mobileTerminal">
-      <div className="mobileTerminalMount" ref={mountRef} />
+      <div className="mobileTerminalMount" ref={mountRef} onClick={focusTerminal} />
       <span className={`mobileTerminalState ${state}`}>{stateLabel(state)}</span>
     </div>
   );

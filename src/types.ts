@@ -84,4 +84,8 @@ export type SpawnTerminalRequest = {
   task?: string;
   title?: string;
   context_mode?: "none" | "task" | "curated";
+  /** Native session id to resume; the control server rebuilds the provider's resume command. */
+  resume_session_id?: string;
+  /** Human label shown on the resumed terminal (typically the original session title). */
+  session_label?: string;
 };

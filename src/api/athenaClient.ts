@@ -16,8 +16,22 @@ export type AthenaClient = {
   refreshService(): Promise<ServiceState>;
   terminalBuffer(target: string, maxChars?: number): Promise<TerminalBuffer>;
   sendTerminalInput(target: string, text: string): Promise<EmbeddedTerminalSession>;
+  /**
+   * Write raw bytes to the terminal's PTY with no Enter appended — keystrokes,
+   * arrows, and control codes reach the agent TUI verbatim. Backs direct typing
+   * from the live xterm view (vs. sendTerminalInput, which submits a whole line).
+   */
+  sendTerminalRaw(target: string, data: string): Promise<EmbeddedTerminalSession>;
   spawnTerminal(request: SpawnTerminalRequest): Promise<EmbeddedTerminalSession[]>;
   killTerminal(target: string): Promise<EmbeddedTerminalSession>;
+  /**
+   * Resume a native session in a fresh live terminal. The control server rebuilds
+   * the provider's resume command from the session id, so the result behaves like
+   * any other live terminal (streamable, writable, killable).
+   */
+  resumeSession(session: AgentSession): Promise<EmbeddedTerminalSession[]>;
+  /** Tail of a native session's on-disk transcript, as plain text. */
+  sessionTranscript(session: AgentSession, maxBytes?: number): Promise<string>;
   /**
    * Same-origin URL of the live SSE output stream for a terminal, or null when
    * streaming is unavailable (demo mode or no control URL configured). Consumed
@@ -81,6 +95,14 @@ class HttpAthenaClient implements AthenaClient {
     return payload.terminal;
   }
 
+  async sendTerminalRaw(target: string, data: string): Promise<EmbeddedTerminalSession> {
+    const payload = await this.controlJson<{ terminal: EmbeddedTerminalSession }>("/terminals/input", {
+      method: "POST",
+      body: JSON.stringify({ target, data }),
+    });
+    return payload.terminal;
+  }
+
   async terminalBuffer(target: string, maxChars = 40_000): Promise<TerminalBuffer> {
     return this.controlJson<TerminalBuffer>(`/terminals/${encodeURIComponent(target)}/buffer?max_chars=${maxChars}`);
   }
@@ -99,6 +121,21 @@ class HttpAthenaClient implements AthenaClient {
       body: JSON.stringify({ target }),
     });
     return payload.terminal;
+  }
+
+  async resumeSession(session: AgentSession): Promise<EmbeddedTerminalSession[]> {
+    return this.spawnTerminal({
+      project_dir: session.workspace,
+      kind: session.provider,
+      title: `${labelForKind(session.provider)} Resume`,
+      session_label: session.title,
+      resume_session_id: session.id,
+    });
+  }
+
+  async sessionTranscript(session: AgentSession, maxBytes = 65_536): Promise<string> {
+    const path = `/agents/sessions/${encodeURIComponent(session.provider)}/${encodeURIComponent(session.id)}/transcript?max_bytes=${maxBytes}&tail=true`;
+    return this.requestText(this.config.backendUrl, path);
   }
 
   private async probe(baseUrl: string, label: string) {
@@ -136,6 +173,17 @@ class HttpAthenaClient implements AthenaClient {
     if (!response.ok) throw new Error(`${response.status} ${response.statusText}`);
     return response.json() as Promise<T>;
   }
+
+  // Transcript endpoints return plain text rather than JSON, so they bypass request<T>.
+  private async requestText(baseUrl: string, path: string): Promise<string> {
+    if (!baseUrl) throw new Error("Base URL is not configured.");
+    const response = await fetch(`${baseUrl}${path}`, {
+      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+      headers: this.config.token ? { Authorization: `Bearer ${this.config.token}` } : {},
+    });
+    if (!response.ok) throw new Error(`${response.status} ${response.statusText}`);
+    return response.text();
+  }
 }
 
 class DemoAthenaClient implements AthenaClient {
@@ -166,6 +214,12 @@ class DemoAthenaClient implements AthenaClient {
     const terminal = this.terminals.find((entry) => entry.id === target || entry.providerSessionId === target);
     if (!terminal) throw new Error(`Demo terminal not found: ${target}`);
     terminal.initialTask = text;
+    return terminal;
+  }
+
+  async sendTerminalRaw(target: string, _data: string): Promise<EmbeddedTerminalSession> {
+    const terminal = this.terminals.find((entry) => entry.id === target || entry.providerSessionId === target);
+    if (!terminal) throw new Error(`Demo terminal not found: ${target}`);
     return terminal;
   }
 
@@ -217,6 +271,28 @@ class DemoAthenaClient implements AthenaClient {
     terminal.exitCode = 0;
     this.terminals = this.terminals.filter((entry) => entry.id !== target);
     return terminal;
+  }
+
+  async resumeSession(session: AgentSession): Promise<EmbeddedTerminalSession[]> {
+    return this.spawnTerminal({
+      project_dir: session.workspace,
+      kind: session.provider,
+      title: `${labelForKind(session.provider)} Resume`,
+      session_label: session.title,
+      resume_session_id: session.id,
+    });
+  }
+
+  async sessionTranscript(session: AgentSession): Promise<string> {
+    return [
+      `# ${session.title}`,
+      `provider: ${session.provider}`,
+      `workspace: ${session.workspace}`,
+      `updated: ${session.updatedAt}`,
+      `resume: ${session.resumeCommand ?? "n/a"}`,
+      "",
+      "Demo transcript. Configure live mode to read the real on-disk session transcript.",
+    ].join("\n");
   }
 
   terminalStreamUrl(): string | null {
