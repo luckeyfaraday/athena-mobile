@@ -4,8 +4,8 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "vite --host 127.0.0.1",
-    "dev:tailscale": "vite --host 0.0.0.0",
+    "dev": "vite",
+    "dev:tailscale": "ATHENA_HOST=tailscale vite",
     "build": "tsc -b && vite build",
     "preview": "vite preview --host 127.0.0.1"
   },
