@@ -23,10 +23,20 @@ For a phone on the same Tailscale network, run:
 npm run dev:tailscale
 ```
 
-Then open the laptop's Tailscale URL, for example:
+This binds the dev server to the laptop's Tailscale IP only (the `100.64.0.0/10`
+address), so the app — and the loopback Athena control proxy behind it — stays
+off any other LAN/Wi-Fi interface the laptop is joined to. It fails fast if
+Tailscale is not up. Then open the laptop's Tailscale URL, for example:
 
 ```text
 http://100.124.147.99:5174
+```
+
+To bind a different address, set `ATHENA_HOST` — an explicit IP, or `0.0.0.0` to
+deliberately expose every interface:
+
+```bash
+ATHENA_HOST=0.0.0.0 npm run dev
 ```
 
 ## Configuration

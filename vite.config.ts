@@ -7,7 +7,7 @@ import path from "node:path";
 export default defineConfig({
   plugins: [react()],
   server: {
-    host: "127.0.0.1",
+    host: resolveHost(),
     port: 5174,
     proxy: {
       "/athena-backend": {
@@ -21,11 +21,12 @@ export default defineConfig({
         rewrite: (requestPath) => requestPath.replace(/^\/athena-control/, ""),
         configure: (proxy) => {
           proxy.on("proxyReq", (proxyReq) => {
-            // The Electron control server only trusts loopback callers that hold
-            // the per-launch token from the 0600 electron-control.json discovery
-            // file. This dev server runs on the laptop as the same OS user, so it
-            // can read that token and present it on the phone's behalf. The token
-            // is read per-request so it survives control-server restarts.
+            // The Electron control server trusts loopback callers. Some Athena
+            // builds additionally write a per-launch bearer token into
+            // electron-control.json; when one is present this dev server (running
+            // as the same OS user) reads it per-request — so it survives
+            // control-server restarts — and forwards it on the phone's behalf.
+            // Builds that omit the token rely on loopback trust alone.
             const token = discoveryToken("electron-control.json");
             if (token) proxyReq.setHeader("authorization", `Bearer ${token}`);
             // changeOrigin already rewrites Host to the loopback target; drop the
@@ -60,4 +61,48 @@ function discoveryUrl(fileName: string): string | null {
 function discoveryToken(fileName: string): string | null {
   const token = readDiscovery(fileName)?.token;
   return typeof token === "string" && token.trim() ? token.trim() : null;
+}
+
+// Resolve the dev-server bind address from ATHENA_HOST:
+//   unset       -> 127.0.0.1 (loopback only)
+//   "tailscale" -> this machine's Tailscale IP, so a phone on the tailnet can
+//                  reach the app without exposing it on every interface
+//   <value>     -> used verbatim (an explicit IP, or "0.0.0.0" to opt into
+//                  binding all interfaces deliberately)
+// The proxy above forwards loopback-trusted requests to Athena's control server,
+// so the default deliberately avoids 0.0.0.0: binding all interfaces would expose
+// that control surface to any untrusted LAN/Wi-Fi the laptop is also joined to.
+function resolveHost(): string {
+  const requested = process.env.ATHENA_HOST?.trim();
+  if (!requested) return "127.0.0.1";
+  if (requested.toLowerCase() === "tailscale") {
+    const tailscaleIp = findTailscaleIp();
+    if (!tailscaleIp) {
+      throw new Error(
+        "ATHENA_HOST=tailscale but no Tailscale IPv4 address (100.64.0.0/10) was found. " +
+          "Start Tailscale, or set ATHENA_HOST to an explicit bind address.",
+      );
+    }
+    return tailscaleIp;
+  }
+  return requested;
+}
+
+function findTailscaleIp(): string | null {
+  for (const addresses of Object.values(os.networkInterfaces())) {
+    for (const address of addresses ?? []) {
+      if (address.family === "IPv4" && !address.internal && isCgnat(address.address)) {
+        return address.address;
+      }
+    }
+  }
+  return null;
+}
+
+// Tailscale assigns each node an address in the 100.64.0.0/10 CGNAT range.
+function isCgnat(ip: string): boolean {
+  const octets = ip.split(".").map((part) => Number(part));
+  if (octets.length !== 4 || octets.some((octet) => !Number.isInteger(octet))) return false;
+  const [first, second] = octets;
+  return first === 100 && second >= 64 && second <= 127;
 }

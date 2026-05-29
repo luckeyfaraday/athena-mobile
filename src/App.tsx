@@ -63,12 +63,21 @@ export function App() {
   }, [snapshot, terminals, config.projectDir]);
   const launchWorkspaceResolved = launchWorkspace || workspaceOptions[0] || primaryWorkspace;
 
+  // The polling effect below captures `refresh` once (empty deps), so route the
+  // live workspace through a ref it reads on every tick — otherwise each poll
+  // reuses the first-render workspace (config.projectDir, before any snapshot
+  // loaded) instead of the currently-selected terminal's workspace.
+  const primaryWorkspaceRef = useRef(primaryWorkspace);
+  useEffect(() => {
+    primaryWorkspaceRef.current = primaryWorkspace;
+  }, [primaryWorkspace]);
+
   async function refresh() {
     if (refreshInFlight.current) return;
     refreshInFlight.current = true;
     setError(null);
     try {
-      const next = await client.snapshot(primaryWorkspace || undefined);
+      const next = await client.snapshot(primaryWorkspaceRef.current || undefined);
       setSnapshot(next);
       setSelectedTerminalId((current) => current ?? next.terminals[0]?.id ?? null);
     } catch (refreshError) {
