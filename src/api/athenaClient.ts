@@ -18,7 +18,15 @@ export type AthenaClient = {
   sendTerminalInput(target: string, text: string): Promise<EmbeddedTerminalSession>;
   spawnTerminal(request: SpawnTerminalRequest): Promise<EmbeddedTerminalSession[]>;
   killTerminal(target: string): Promise<EmbeddedTerminalSession>;
+  /**
+   * Same-origin URL of the live SSE output stream for a terminal, or null when
+   * streaming is unavailable (demo mode or no control URL configured). Consumed
+   * by the xterm view via EventSource; the dev proxy injects the control token.
+   */
+  terminalStreamUrl(target: string, maxChars?: number): string | null;
 };
+
+const REQUEST_TIMEOUT_MS = 15_000;
 
 export function createAthenaClient(config: AppConfig): AthenaClient {
   if (config.mode === "live") return new HttpAthenaClient(config);
@@ -29,12 +37,14 @@ class HttpAthenaClient implements AthenaClient {
   constructor(private readonly config: AppConfig) {}
 
   async snapshot(projectDir?: string): Promise<MobileSnapshot> {
+    // Each section degrades independently: a down control server must not blank
+    // out backend status (and vice versa). Health is probed separately.
     const [service, hermes, terminals, recentSessions] = await Promise.all([
       this.refreshService(),
       this.backendJson<{ hermes: HermesStatus }>("/hermes/status").then((payload) => payload.hermes).catch(() => null),
-      this.controlJson<{ terminals: EmbeddedTerminalSession[] }>("/terminals").then((payload) => payload.terminals),
+      this.controlJson<{ terminals: EmbeddedTerminalSession[] }>("/terminals").then((payload) => payload.terminals).catch(() => []),
       projectDir
-        ? this.backendJson<{ sessions: AgentSession[] }>(`/agents/sessions?project_dir=${encodeURIComponent(projectDir)}&limit=25`).then((payload) => payload.sessions)
+        ? this.backendJson<{ sessions: AgentSession[] }>(`/agents/sessions?project_dir=${encodeURIComponent(projectDir)}&limit=25`).then((payload) => payload.sessions).catch(() => [])
         : Promise.resolve([]),
     ]);
     return {
@@ -44,6 +54,11 @@ class HttpAthenaClient implements AthenaClient {
       recentSessions,
       workspaces: summarizeWorkspaces(terminals, recentSessions),
     };
+  }
+
+  terminalStreamUrl(target: string, maxChars = 200_000): string | null {
+    if (!this.config.controlUrl) return null;
+    return `${this.config.controlUrl}/terminals/${encodeURIComponent(target)}/stream?max_chars=${maxChars}`;
   }
 
   async refreshService(): Promise<ServiceState> {
@@ -110,6 +125,8 @@ class HttpAthenaClient implements AthenaClient {
     if (!baseUrl) throw new Error("Base URL is not configured.");
     const response = await fetch(`${baseUrl}${path}`, {
       ...init,
+      // Time out stalled requests so a hung backend never leaves the UI spinning.
+      signal: init.signal ?? AbortSignal.timeout(REQUEST_TIMEOUT_MS),
       headers: {
         "Content-Type": "application/json",
         ...(this.config.token ? { Authorization: `Bearer ${this.config.token}` } : {}),
@@ -200,6 +217,10 @@ class DemoAthenaClient implements AthenaClient {
     terminal.exitCode = 0;
     this.terminals = this.terminals.filter((entry) => entry.id !== target);
     return terminal;
+  }
+
+  terminalStreamUrl(): string | null {
+    return null;
   }
 }
 
