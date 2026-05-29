@@ -129,23 +129,23 @@ button:disabled { opacity: 0.42; cursor: not-allowed; }
 /* ── TAB BAR ───────────────────────────────────────────── */
 .tabBar {
   flex: 0 0 auto;
-  padding: 6px 8px calc(env(safe-area-inset-bottom) + 6px);
+  padding: 4px 6px calc(env(safe-area-inset-bottom) + 4px);
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
+  grid-template-columns: repeat(4, 1fr);
   gap: 4px;
   border-top: 1px solid var(--line);
   background: var(--bg);
 }
 .tabButton {
-  height: 52px;
+  height: 46px;
   display: grid;
   place-items: center;
-  gap: 3px;
+  gap: 2px;
   border: 0;
   border-radius: 10px;
   background: transparent;
   color: var(--muted);
-  font-size: 11px;
+  font-size: 10px;
   font-weight: 500;
 }
 .tabButton.active { color: var(--text); background: var(--panel-2); }
@@ -173,9 +173,45 @@ button:disabled { opacity: 0.42; cursor: not-allowed; }
   display: flex;
   flex-direction: column;
 }
+/* Workspace selector: a dropdown picks the project; the strip below shows only
+   that workspace's terminals, keeping the view compact on small screens. */
+.workspaceBar {
+  position: relative;
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 10px 12px 0;
+  padding: 0 10px;
+  border: 1px solid var(--line-strong);
+  border-radius: 10px;
+  background: var(--panel-2);
+  color: var(--muted);
+}
+.workspaceSelect {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 42px;
+  padding: 0 22px 0 0;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  font-size: 14px;
+  font-weight: 600;
+  appearance: none;
+  -webkit-appearance: none;
+  outline: none;
+}
+.workspaceBarChevron {
+  position: absolute;
+  right: 10px;
+  pointer-events: none;
+  color: var(--muted);
+}
+
 .sessionStrip {
   flex: 0 0 auto;
-  padding: 10px 12px;
+  padding: 8px 12px;
   display: flex;
   gap: 8px;
   overflow-x: auto;
@@ -249,6 +285,8 @@ button:disabled { opacity: 0.42; cursor: not-allowed; }
   inset: 0;
   padding: 6px;
   overflow: auto;
+  /* Smooth, momentum horizontal scroll to reach the full 96-column width. */
+  -webkit-overflow-scrolling: touch;
   background: var(--terminal);
 }
 .mobileTerminalState {
@@ -267,30 +305,31 @@ button:disabled { opacity: 0.42; cursor: not-allowed; }
 .mobileTerminalState.live { color: var(--text); }
 .mobileTerminalState.error { color: var(--danger); }
 
-.composer {
+/* Keys missing from mobile soft keyboards; typed characters go through xterm. */
+.quickKeys {
   flex: 0 0 auto;
+  display: flex;
+  gap: 6px;
   padding: 8px;
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  gap: 8px;
+  overflow-x: auto;
   border-top: 1px solid var(--line);
   background: var(--panel-2);
+  scrollbar-width: none;
 }
-.composer textarea {
-  min-width: 0;
-  max-height: 120px;
-  padding: 10px 12px;
+.quickKeys::-webkit-scrollbar { display: none; }
+.quickKey {
+  flex: 0 0 auto;
+  min-width: 38px;
+  padding: 9px 12px;
   border: 1px solid var(--line-strong);
-  border-radius: 10px;
+  border-radius: 8px;
   background: var(--panel);
-  color: var(--text);
-  font-size: 14px;
-  line-height: 1.35;
-  resize: none;
-  outline: none;
+  color: var(--text-2);
+  font-family: var(--font-mono);
+  font-size: 13px;
+  font-weight: 500;
 }
-.composer textarea:focus { border-color: var(--text-2); }
-.sendButton { width: 48px; padding: 0; }
+.quickKey:active { background: var(--panel-3); color: var(--text); }
 
 /* ── PANELS (launch / workspaces) ──────────────────────── */
 .panel {
@@ -332,6 +371,7 @@ button:disabled { opacity: 0.42; cursor: not-allowed; }
 
 .field { display: block; margin-bottom: 14px; }
 .field span { display: block; margin-bottom: 7px; color: var(--muted); font-size: 12px; font-weight: 500; }
+.field span em { font-style: normal; color: var(--faint); }
 .field textarea {
   width: 100%;
   padding: 12px;
@@ -346,21 +386,32 @@ button:disabled { opacity: 0.42; cursor: not-allowed; }
 }
 .field textarea:focus { border-color: var(--text-2); }
 
-.workspaceHint {
+.workspacePicker { display: flex; flex-direction: column; gap: 8px; }
+.workspaceOption {
   display: flex;
   align-items: center;
-  gap: 8px;
-  margin-bottom: 16px;
-  padding: 10px 12px;
+  gap: 10px;
+  padding: 11px 12px;
   border: 1px solid var(--line);
   border-radius: 10px;
   background: var(--panel);
   color: var(--text-2);
-  font-family: var(--font-mono);
-  font-size: 12px;
+  text-align: left;
   overflow: hidden;
 }
-.workspaceHint span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.workspaceOption.active { border-color: var(--line-strong); background: var(--panel-2); color: var(--text); }
+.workspaceOption svg { flex: 0 0 auto; color: var(--muted); }
+.workspaceOptionText { min-width: 0; }
+.workspaceOptionText strong { display: block; font-size: 14px; font-weight: 600; }
+.workspaceOptionText small {
+  display: block;
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 
 .primaryButton {
   display: inline-flex;
@@ -425,5 +476,80 @@ button:disabled { opacity: 0.42; cursor: not-allowed; }
 .emptyState span { max-width: 280px; font-size: 13px; line-height: 1.5; }
 .emptyState .primaryButton { margin-top: 6px; }
 
-/* xterm fills its scroll container; horizontal scroll preserves agent TUIs. */
+/* ── HISTORY ───────────────────────────────────────────── */
+.historyList { display: flex; flex-direction: column; gap: 8px; }
+.historyRow {
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel);
+}
+.historyMeta { display: flex; align-items: flex-start; gap: 10px; }
+.historyMeta .providerDot { margin-top: 5px; }
+.historyText { min-width: 0; }
+.historyText strong { display: block; font-size: 14px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.historyText small { display: block; margin-top: 2px; color: var(--muted); font-size: 11px; }
+.historyActions { display: flex; gap: 8px; margin-top: 12px; }
+.historyActions .primaryButton,
+.historyActions .ghostButton { flex: 1; justify-content: center; }
+
+.ghostButton {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  padding: 8px 11px;
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text-2);
+  font-size: 12px;
+  font-weight: 500;
+}
+.ghostButton:active:not(:disabled) { background: var(--panel-2); }
+
+/* ── TRANSCRIPT SHEET ──────────────────────────────────── */
+.sheetBackdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 20;
+  display: flex;
+  align-items: flex-end;
+  background: rgba(0, 0, 0, 0.6);
+}
+.sheet {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  max-height: 82vh;
+  border-top-left-radius: 16px;
+  border-top-right-radius: 16px;
+  border-top: 1px solid var(--line-strong);
+  background: var(--panel);
+}
+.sheetHead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--line);
+}
+.sheetHead strong { display: block; font-size: 14px; font-weight: 600; }
+.sheetHead small { display: block; margin-top: 2px; color: var(--muted); font-size: 11px; }
+.sheetStatus { padding: 24px 16px; color: var(--muted); font-size: 13px; text-align: center; }
+.sheetStatus.error { color: var(--danger); }
+.transcriptBody {
+  margin: 0;
+  padding: 14px 16px;
+  overflow: auto;
+  color: var(--text-2);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* xterm renders the full 96 columns; the mount scrolls horizontally to reach them. */
 .mobileTerminalMount .xterm { height: 100%; }
