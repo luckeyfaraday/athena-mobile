@@ -113,8 +113,15 @@ export function MobileTerminal({ streamUrl, sessionId, onInput }: Props) {
     mount.addEventListener("touchstart", onTouchStart, { capture: true, passive: true });
     mount.addEventListener("touchmove", onTouchMove, { capture: true, passive: false });
 
+    // The live SSE keeps an HTTP connection open, which disqualifies the page from
+    // the browser's back/forward cache — so a backgrounded PWA is torn down and
+    // must fully reload on return. We close the stream while the tab is hidden (so
+    // the page can be frozen/restored instead) and reopen it on return. Each
+    // reconnect replays a buffer snapshot, so the screen resyncs cleanly.
     let source: EventSource | null = null;
-    if (streamUrl) {
+    let exited = false;
+    const connect = () => {
+      if (!streamUrl || source || exited) return;
       setState("connecting");
       source = new EventSource(streamUrl);
       // Each (re)connection begins with a snapshot of the current buffer; reset
@@ -131,13 +138,28 @@ export function MobileTerminal({ streamUrl, sessionId, onInput }: Props) {
       source.addEventListener("exit", (event) => {
         const exitCode = parseExitCode((event as MessageEvent<string>).data);
         terminal.writeln(`\r\n\x1b[33m[process exited: ${exitCode ?? "unknown"}]\x1b[0m`);
+        exited = true;
         setState("exited");
         source?.close();
+        source = null;
       });
       // EventSource auto-reconnects on transient errors; only flag the UI.
       source.addEventListener("error", () => {
         setState((current) => (current === "exited" ? current : "error"));
       });
+    };
+    const disconnect = () => {
+      source?.close();
+      source = null;
+    };
+    const onVisibility = () => {
+      if (document.visibilityState === "visible") connect();
+      else disconnect();
+    };
+
+    if (streamUrl) {
+      if (document.visibilityState === "visible") connect();
+      document.addEventListener("visibilitychange", onVisibility);
     } else {
       terminal.writeln("\x1b[90mLive stream unavailable in this mode.\x1b[0m");
       setState("error");
@@ -148,7 +170,8 @@ export function MobileTerminal({ streamUrl, sessionId, onInput }: Props) {
       observer.disconnect();
       mount.removeEventListener("touchstart", onTouchStart, { capture: true });
       mount.removeEventListener("touchmove", onTouchMove, { capture: true });
-      source?.close();
+      document.removeEventListener("visibilitychange", onVisibility);
+      disconnect();
       terminal.dispose();
       terminalRef.current = null;
     };

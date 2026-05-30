@@ -34,9 +34,17 @@ export function App() {
   const config = useMemo(() => readConfig(), []);
   const client = useMemo(() => createAthenaClient(config), [config]);
 
-  const [tab, setTab] = useState<Tab>("agents");
-  const [snapshot, setSnapshot] = useState<MobileSnapshot | null>(null);
-  const [selectedTerminalId, setSelectedTerminalId] = useState<string | null>(null);
+  // Hydrate the cross-reload state (tab, selected terminal, last snapshot) so a
+  // backgrounded PWA that the OS evicted comes back to the same view with its last
+  // known content already on screen, then revalidates — instead of a blank UI that
+  // blocks on the first network round-trip.
+  const [tab, setTab] = useState<Tab>(() => loadPersisted<Tab>(STORAGE_KEYS.tab, "agents"));
+  const [snapshot, setSnapshot] = useState<MobileSnapshot | null>(() =>
+    loadPersisted<MobileSnapshot | null>(STORAGE_KEYS.snapshot, null),
+  );
+  const [selectedTerminalId, setSelectedTerminalId] = useState<string | null>(() =>
+    loadPersisted<string | null>(STORAGE_KEYS.selectedTerminalId, null),
+  );
   const [launchTask, setLaunchTask] = useState("");
   const [launchKind, setLaunchKind] = useState<EmbeddedTerminalKind>("codex");
   const [launchWorkspace, setLaunchWorkspace] = useState("");
@@ -87,12 +95,40 @@ export function App() {
     }
   }
 
+  // Poll only while the tab is foregrounded: a hidden PWA can't show updates, and
+  // stopping the timer (plus the SSE in MobileTerminal) lets the browser keep the
+  // page bfcache-eligible so it can be restored without a reload. On return we
+  // refresh immediately rather than waiting out the next interval.
   useEffect(() => {
-    void refresh();
-    const interval = window.setInterval(() => void refresh(), SNAPSHOT_REFRESH_MS);
-    return () => window.clearInterval(interval);
+    let interval: number | undefined;
+    const start = () => {
+      if (interval !== undefined) return;
+      void refresh();
+      interval = window.setInterval(() => void refresh(), SNAPSHOT_REFRESH_MS);
+    };
+    const stop = () => {
+      if (interval !== undefined) {
+        window.clearInterval(interval);
+        interval = undefined;
+      }
+    };
+    const onVisibility = () => {
+      if (document.visibilityState === "visible") start();
+      else stop();
+    };
+    if (document.visibilityState === "visible") start();
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => {
+      stop();
+      document.removeEventListener("visibilitychange", onVisibility);
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Mirror the cross-reload state back to storage as it changes.
+  useEffect(() => persist(STORAGE_KEYS.tab, tab), [tab]);
+  useEffect(() => persist(STORAGE_KEYS.snapshot, snapshot), [snapshot]);
+  useEffect(() => persist(STORAGE_KEYS.selectedTerminalId, selectedTerminalId), [selectedTerminalId]);
 
   // Raw keystrokes (typed chars, quick-keys, control codes) go straight to the
   // PTY and echo back through the live stream. Fire-and-forget: toggling a busy
@@ -649,4 +685,30 @@ function formatRelativeTime(iso: string): string {
 
 function messageOf(value: unknown): string {
   return value instanceof Error ? value.message : String(value);
+}
+
+// localStorage (not sessionStorage) so the view survives a full OS eviction of the
+// backgrounded PWA, not just an in-tab reload.
+const STORAGE_KEYS = {
+  tab: "athena.tab",
+  snapshot: "athena.snapshot",
+  selectedTerminalId: "athena.selectedTerminalId",
+} as const;
+
+function loadPersisted<T>(key: string, fallback: T): T {
+  try {
+    const raw = window.localStorage.getItem(key);
+    return raw === null ? fallback : (JSON.parse(raw) as T);
+  } catch {
+    // Storage unavailable (private mode) or corrupt JSON — fall back to default.
+    return fallback;
+  }
+}
+
+function persist(key: string, value: unknown): void {
+  try {
+    window.localStorage.setItem(key, JSON.stringify(value));
+  } catch {
+    // Storage full or unavailable — non-fatal; the app just loses instant restore.
+  }
 }
