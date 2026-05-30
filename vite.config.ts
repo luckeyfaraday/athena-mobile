@@ -3,12 +3,17 @@ import react from "@vitejs/plugin-react";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { athenaPushPlugin } from "./server/push-plugin.mjs";
 
 export default defineConfig({
-  plugins: [react()],
+  plugins: [react(), athenaPushPlugin()],
   server: {
     host: resolveHost(),
     port: 5174,
+    // `tailscale serve` terminates HTTPS and proxies to this loopback server,
+    // forwarding the tailnet hostname as the Host header. Vite's dev-server host
+    // check must accept it; any *.ts.net MagicDNS name is allowed.
+    allowedHosts: [".ts.net"],
     proxy: {
       "/athena-backend": {
         target: process.env.ATHENA_BACKEND_TARGET || discoveryUrl("backend.json") || "http://127.0.0.1:8000",

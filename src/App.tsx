@@ -1,5 +1,8 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
+  Bell,
+  BellOff,
+  BellRing,
   Bot,
   ChevronDown,
   CircleStop,
@@ -16,6 +19,7 @@ import {
 } from "lucide-react";
 import { createAthenaClient } from "./api/athenaClient";
 import { readConfig } from "./config";
+import { enablePush, pushState, sendTestPush, type PushState } from "./push/notifications";
 import { MobileTerminal } from "./components/MobileTerminal";
 import type { AgentSession, EmbeddedTerminalKind, EmbeddedTerminalSession, MobileSnapshot } from "./types";
 
@@ -130,6 +134,30 @@ export function App() {
   useEffect(() => persist(STORAGE_KEYS.snapshot, snapshot), [snapshot]);
   useEffect(() => persist(STORAGE_KEYS.selectedTerminalId, selectedTerminalId), [selectedTerminalId]);
 
+  // Deep-link from a notification: focus the agent it fired for. Covers both the
+  // cold open (the SW launched a new window at /?terminal=…) and a warm focus
+  // (the SW posts a message to the already-open app).
+  useEffect(() => {
+    const focusTerminal = (rawUrl: string) => {
+      try {
+        const terminalId = new URL(rawUrl, window.location.origin).searchParams.get("terminal");
+        if (terminalId) {
+          setSelectedTerminalId(terminalId);
+          setTab("agents");
+        }
+      } catch {
+        // Ignore malformed deep-link URLs.
+      }
+    };
+    focusTerminal(window.location.href);
+    if (!("serviceWorker" in navigator)) return;
+    const onMessage = (event: MessageEvent) => {
+      if (event.data?.type === "athena-notification-click") focusTerminal(event.data.url);
+    };
+    navigator.serviceWorker.addEventListener("message", onMessage);
+    return () => navigator.serviceWorker.removeEventListener("message", onMessage);
+  }, []);
+
   // Raw keystrokes (typed chars, quick-keys, control codes) go straight to the
   // PTY and echo back through the live stream. Fire-and-forget: toggling a busy
   // flag per keystroke would stall typing; we only surface errors.
@@ -225,6 +253,7 @@ export function App() {
         <div className="topStatus">
           <StatusDot label="API" online={backendHealthy} />
           <StatusDot label="Ctrl" online={controlHealthy} />
+          <NotificationsButton />
           <button className="iconButton" type="button" onClick={() => void refresh()} aria-label="Refresh">
             <RefreshCw size={17} />
           </button>
@@ -635,6 +664,72 @@ function StatusDot({ label, online }: { label: string; online: boolean }) {
       <i />
       {label}
     </span>
+  );
+}
+
+// Header control for agent-attention push. Reflects the live permission/
+// subscription state: tap to enroll when off, tap to fire a test ping when on.
+// Disabled (with an explanatory tooltip) where push can't work — an insecure
+// origin or a browser without the Push API.
+function NotificationsButton() {
+  const [state, setState] = useState<PushState | "loading">("loading");
+  const [pending, setPending] = useState(false);
+
+  useEffect(() => {
+    let active = true;
+    void pushState().then((next) => {
+      if (active) setState(next);
+    });
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  const ready = state === "granted";
+  const enrollable = state === "default";
+  const blocked = state === "denied" || state === "insecure" || state === "unsupported";
+
+  const title = ready
+    ? "Notifications on — tap to send a test"
+    : enrollable
+      ? "Enable agent-attention notifications"
+      : state === "insecure"
+        ? "Open the app over HTTPS (tailscale serve) to enable notifications"
+        : state === "denied"
+          ? "Notifications blocked — allow them in browser settings"
+          : state === "unsupported"
+            ? "This browser does not support Web Push"
+            : "Notifications";
+
+  const onClick = async () => {
+    if (pending || state === "loading" || blocked) return;
+    setPending(true);
+    try {
+      if (ready) {
+        await sendTestPush();
+      } else {
+        const result = await enablePush();
+        setState(result.state);
+      }
+    } catch {
+      // Swallow — the next pushState read reflects reality; tooltip explains.
+    } finally {
+      setPending(false);
+    }
+  };
+
+  const Icon = ready ? BellRing : blocked ? BellOff : Bell;
+  return (
+    <button
+      className={ready ? "iconButton notifyOn" : "iconButton"}
+      type="button"
+      onClick={() => void onClick()}
+      disabled={pending || state === "loading" || blocked}
+      aria-label={title}
+      title={title}
+    >
+      <Icon size={17} />
+    </button>
   );
 }
 
