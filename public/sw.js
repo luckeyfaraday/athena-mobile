@@ -14,9 +14,16 @@
 
 const CACHE = "athena-shell-v1";
 
-// Requests routed to Athena's backend/control servers (and the live SSE stream)
-// must always go to the network — caching them would serve stale agent state.
-const PASS_THROUGH = ["/athena-backend", "/athena-control"];
+// When registered against the HTTPS dev server (so push can be tested), the
+// worker must not cache Vite's module graph — that would serve stale code across
+// edits. The registrant passes ?dev=1; in that mode fetches pass straight to the
+// network and only the push handlers below are active.
+const DEV = new URL(self.location.href).searchParams.get("dev") === "1";
+
+// Requests routed to Athena's backend/control/push servers (and the live SSE
+// stream) must always go to the network — caching them would serve stale agent
+// state.
+const PASS_THROUGH = ["/athena-backend", "/athena-control", "/athena-push"];
 
 self.addEventListener("install", (event) => {
   // Activate this worker as soon as it finishes installing, without waiting for
@@ -37,6 +44,7 @@ self.addEventListener("activate", (event) => {
 });
 
 self.addEventListener("fetch", (event) => {
+  if (DEV) return; // dev: never cache; let the network/Vite serve everything.
   const request = event.request;
   if (request.method !== "GET") return;
 
@@ -46,6 +54,51 @@ self.addEventListener("fetch", (event) => {
 
   event.respondWith(staleWhileRevalidate(request));
 });
+
+// A push arrives even when the PWA is closed; show the agent-attention alert.
+self.addEventListener("push", (event) => {
+  const payload = safeJson(event.data);
+  const title = payload.title || "Athena Mobile";
+  event.waitUntil(
+    self.registration.showNotification(title, {
+      body: payload.body || "",
+      // tag = terminal id, so repeated alerts for one agent collapse in the tray.
+      tag: payload.tag || "athena",
+      renotify: true,
+      icon: "/athena-icon-192.png",
+      badge: "/athena-icon-192.png",
+      data: { url: payload.url || "/" },
+    }),
+  );
+});
+
+// Tapping the notification focuses an open app window (deep-linking via a
+// postMessage the app reads) or opens a new one.
+self.addEventListener("notificationclick", (event) => {
+  event.notification.close();
+  const targetUrl = event.notification.data?.url || "/";
+  event.waitUntil(
+    (async () => {
+      const clientsList = await self.clients.matchAll({ type: "window", includeUncontrolled: true });
+      for (const client of clientsList) {
+        if ("focus" in client) {
+          client.postMessage({ type: "athena-notification-click", url: targetUrl });
+          return client.focus();
+        }
+      }
+      if (self.clients.openWindow) return self.clients.openWindow(targetUrl);
+    })(),
+  );
+});
+
+function safeJson(data) {
+  if (!data) return {};
+  try {
+    return data.json();
+  } catch {
+    return {};
+  }
+}
 
 async function staleWhileRevalidate(request) {
   const cache = await caches.open(CACHE);

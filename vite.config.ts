@@ -1,44 +1,83 @@
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import fs from "node:fs";
+import http from "node:http";
+import https from "node:https";
 import os from "node:os";
 import path from "node:path";
+import { athenaPushPlugin } from "./server/push-plugin.mjs";
 
 export default defineConfig({
-  plugins: [react()],
+  plugins: [react(), athenaControlProxyPlugin(), athenaPushPlugin()],
   server: {
     host: resolveHost(),
     port: 5174,
+    // `tailscale serve` terminates HTTPS and proxies to this loopback server,
+    // forwarding the tailnet hostname as the Host header. Vite's dev-server host
+    // check must accept it; any *.ts.net MagicDNS name is allowed.
+    allowedHosts: [".ts.net"],
     proxy: {
       "/athena-backend": {
         target: process.env.ATHENA_BACKEND_TARGET || discoveryUrl("backend.json") || "http://127.0.0.1:8000",
         changeOrigin: true,
         rewrite: (requestPath) => requestPath.replace(/^\/athena-backend/, ""),
       },
-      "/athena-control": {
-        target: process.env.ATHENA_CONTROL_TARGET || discoveryUrl("electron-control.json") || "http://127.0.0.1:9000",
-        changeOrigin: true,
-        rewrite: (requestPath) => requestPath.replace(/^\/athena-control/, ""),
-        configure: (proxy) => {
-          proxy.on("proxyReq", (proxyReq) => {
-            // The Electron control server trusts loopback callers. Some Athena
-            // builds additionally write a per-launch bearer token into
-            // electron-control.json; when one is present this dev server (running
-            // as the same OS user) reads it per-request — so it survives
-            // control-server restarts — and forwards it on the phone's behalf.
-            // Builds that omit the token rely on loopback trust alone.
-            const token = discoveryToken("electron-control.json");
-            if (token) proxyReq.setHeader("authorization", `Bearer ${token}`);
-            // changeOrigin already rewrites Host to the loopback target; drop the
-            // phone's Origin/Referer so the loopback-origin check passes too.
-            proxyReq.removeHeader("origin");
-            proxyReq.removeHeader("referer");
-          });
-        },
-      },
     },
   },
 });
+
+function athenaControlProxyPlugin() {
+  return {
+    name: "athena-control-dynamic-proxy",
+    configureServer(server) {
+      server.middlewares.use("/athena-control", (req, res) => {
+        proxyControlRequest(req, res);
+      });
+    },
+  };
+}
+
+function proxyControlRequest(req: http.IncomingMessage, res: http.ServerResponse): void {
+  const baseUrl = process.env.ATHENA_CONTROL_TARGET || discoveryUrl("electron-control.json") || "http://127.0.0.1:9000";
+  const target = new URL(req.url || "/", baseUrl);
+  const token = discoveryToken("electron-control.json");
+  const headers = { ...req.headers, host: target.host };
+  delete headers.origin;
+  delete headers.referer;
+  if (token) headers.authorization = `Bearer ${token}`;
+
+  const transport = target.protocol === "https:" ? https : http;
+  const upstream = transport.request(
+    target,
+    {
+      method: req.method,
+      headers,
+    },
+    (upstreamResponse) => {
+      res.writeHead(upstreamResponse.statusCode ?? 502, stripHopByHopHeaders(upstreamResponse.headers));
+      upstreamResponse.pipe(res);
+    },
+  );
+  upstream.on("error", (error) => {
+    if (res.headersSent) return res.end();
+    res.writeHead(502, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ error: `Electron control proxy failed: ${error.message}` }));
+  });
+  req.pipe(upstream);
+}
+
+function stripHopByHopHeaders(headers: http.IncomingHttpHeaders): http.OutgoingHttpHeaders {
+  const next = { ...headers };
+  delete next.connection;
+  delete next["keep-alive"];
+  delete next["proxy-authenticate"];
+  delete next["proxy-authorization"];
+  delete next.te;
+  delete next.trailer;
+  delete next["transfer-encoding"];
+  delete next.upgrade;
+  return next;
+}
 
 function discoveryFilePath(fileName: string): string {
   return path.join(os.homedir(), ".context-workspace", fileName);

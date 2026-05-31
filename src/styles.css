@@ -103,6 +103,8 @@ button:disabled { opacity: 0.42; cursor: not-allowed; }
   color: var(--text-2);
 }
 .iconButton:active { background: var(--panel-3); }
+.iconButton:disabled { opacity: 0.45; }
+.iconButton.notifyOn { color: var(--text); border-color: var(--text); }
 
 .errorBanner {
   flex: 0 0 auto;
