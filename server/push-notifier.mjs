@@ -159,7 +159,7 @@ export function createPushNotifier() {
       title: kind === "action" ? "Agent waiting" : "Agent update",
       body,
       tag: `athena-${terminal.id}`,
-      url: `/?terminal=${encodeURIComponent(terminal.id)}`,
+      url: notificationUrl(terminal),
     });
   }
 
@@ -258,6 +258,13 @@ function firstLine(text) {
   const clean = text.replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, " ").trim();
   const line = clean.split("\n").map((l) => l.trim()).filter(Boolean).pop() || "Update available.";
   return line.length > 120 ? `${line.slice(0, 117)}...` : line;
+}
+
+function notificationUrl(terminal) {
+  const params = new URLSearchParams();
+  params.set("terminal", terminal.id);
+  if (terminal.workspace) params.set("workspace", terminal.workspace);
+  return `/?${params.toString()}`;
 }
 
 function summarizeEndpoint(endpoint) {
