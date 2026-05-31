@@ -25,7 +25,7 @@ const TERMINALS_POLL_MS = 5000;
 // Suppress repeat notifications of the same kind for one terminal within this
 // window, so a long-lived "waiting for approval" prompt pings once, not forever.
 const DEBOUNCE_MS = 45_000;
-const CONTACT = "mailto:athena-mobile@localhost";
+const CONTACT = validVapidSubject(process.env.ATHENA_PUSH_CONTACT) || "mailto:athena-mobile@example.com";
 
 export function createPushNotifier() {
   const secrets = loadSecrets();
@@ -55,13 +55,14 @@ export function createPushNotifier() {
         return sendJson(res, 200, { ok: true, subscriptions: secrets.subscriptions.length });
       }
       if (req.method === "POST" && req.url === "/test") {
-        await broadcast(secrets, {
+        const result = await broadcast(secrets, {
           title: "Athena Mobile",
           body: "Test notification — push is wired up.",
           tag: "athena-test",
           url: "/",
         });
-        return sendJson(res, 200, { ok: true, sent: secrets.subscriptions.length });
+        const status = result.sent > 0 && result.failed === 0 ? 200 : 502;
+        return sendJson(res, status, { ok: status === 200, ...result });
       }
       return sendJson(res, 404, { error: `Unknown push endpoint: ${req.method} ${req.url}` });
     } catch (error) {
@@ -177,16 +178,25 @@ export function createPushNotifier() {
 }
 
 async function broadcast(secrets, payload) {
-  if (secrets.subscriptions.length === 0) return;
+  if (secrets.subscriptions.length === 0) return { total: 0, sent: 0, failed: 0, errors: [] };
   const body = JSON.stringify(payload);
   const stale = [];
+  const errors = [];
+  let sent = 0;
   await Promise.all(
     secrets.subscriptions.map(async (sub) => {
       try {
         await webpush.sendNotification(sub, body);
+        sent += 1;
       } catch (error) {
         // 404/410 mean the subscription was revoked on the device — prune it.
         if (error?.statusCode === 404 || error?.statusCode === 410) stale.push(sub.endpoint);
+        errors.push({
+          endpoint: summarizeEndpoint(sub.endpoint),
+          statusCode: error?.statusCode ?? null,
+          message: error instanceof Error ? error.message : String(error),
+          body: typeof error?.body === "string" ? error.body.slice(0, 500) : undefined,
+        });
       }
     }),
   );
@@ -194,6 +204,7 @@ async function broadcast(secrets, payload) {
     secrets.subscriptions = secrets.subscriptions.filter((s) => !stale.includes(s.endpoint));
     saveSecrets(secrets);
   }
+  return { total: sent + errors.length, sent, failed: errors.length, errors };
 }
 
 async function fetchTerminals(control) {
@@ -247,6 +258,16 @@ function firstLine(text) {
   const clean = text.replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, " ").trim();
   const line = clean.split("\n").map((l) => l.trim()).filter(Boolean).pop() || "Update available.";
   return line.length > 120 ? `${line.slice(0, 117)}...` : line;
+}
+
+function summarizeEndpoint(endpoint) {
+  if (typeof endpoint !== "string") return "";
+  return endpoint.length > 96 ? `${endpoint.slice(0, 93)}...` : endpoint;
+}
+
+function validVapidSubject(value) {
+  const subject = typeof value === "string" ? value.trim() : "";
+  return /^(mailto:[^@\s]+@[^@\s]+\.[^@\s]+|https:\/\/[^/\s]+(?:\/\S*)?)$/i.test(subject) ? subject : null;
 }
 
 // ---- secrets + discovery ----------------------------------------------------

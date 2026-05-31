@@ -674,6 +674,7 @@ function StatusDot({ label, online }: { label: string; online: boolean }) {
 function NotificationsButton() {
   const [state, setState] = useState<PushState | "loading">("loading");
   const [pending, setPending] = useState(false);
+  const [lastError, setLastError] = useState<string | null>(null);
 
   useEffect(() => {
     let active = true;
@@ -689,7 +690,7 @@ function NotificationsButton() {
   const enrollable = state === "default";
   const blocked = state === "denied" || state === "insecure" || state === "unsupported";
 
-  const title = ready
+  const baseTitle = ready
     ? "Notifications on — tap to send a test"
     : enrollable
       ? "Enable agent-attention notifications"
@@ -700,19 +701,23 @@ function NotificationsButton() {
           : state === "unsupported"
             ? "This browser does not support Web Push"
             : "Notifications";
+  const title = lastError ? `${baseTitle}. Last error: ${lastError}` : baseTitle;
 
   const onClick = async () => {
     if (pending || state === "loading" || blocked) return;
     setPending(true);
+    setLastError(null);
     try {
       if (ready) {
         await sendTestPush();
       } else {
         const result = await enablePush();
         setState(result.state);
+        if (!result.ok && result.error) setLastError(result.error);
       }
-    } catch {
-      // Swallow — the next pushState read reflects reality; tooltip explains.
+    } catch (pushError) {
+      setLastError(messageOf(pushError));
+      void pushState().then(setState).catch(() => {});
     } finally {
       setPending(false);
     }

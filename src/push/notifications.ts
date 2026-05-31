@@ -34,15 +34,22 @@ export async function enablePush(): Promise<EnableResult> {
   const permission = await Notification.requestPermission();
   if (permission !== "granted") return { ok: false, state: permission };
 
+  let subscription: PushSubscription | null = null;
   try {
     const reg = await navigator.serviceWorker.ready;
     const { publicKey } = await fetchJson<{ publicKey: string }>(`${PUSH_BASE}/vapid`);
+    const applicationServerKey = urlBase64ToUint8Array(publicKey);
     const existing = await reg.pushManager.getSubscription();
-    const subscription =
-      existing ??
+    if (existing && !subscriptionUsesKey(existing, applicationServerKey)) {
+      await existing.unsubscribe().catch(() => {});
+    } else {
+      subscription = existing;
+    }
+    subscription =
+      subscription ??
       (await reg.pushManager.subscribe({
         userVisibleOnly: true,
-        applicationServerKey: urlBase64ToUint8Array(publicKey),
+        applicationServerKey,
       }));
     await fetchJson(`${PUSH_BASE}/subscribe`, {
       method: "POST",
@@ -51,7 +58,10 @@ export async function enablePush(): Promise<EnableResult> {
     });
     return { ok: true, state: "granted" };
   } catch (error) {
-    return { ok: false, state: "granted", error: error instanceof Error ? error.message : String(error) };
+    // If the browser has a local subscription that the dev server never accepted,
+    // drop it so the bell offers enrollment again instead of showing a false-on state.
+    await subscription?.unsubscribe().catch(() => {});
+    return { ok: false, state: "default", error: error instanceof Error ? error.message : String(error) };
   }
 }
 
@@ -88,4 +98,12 @@ function urlBase64ToUint8Array(base64Url: string): ArrayBuffer {
   const view = new Uint8Array(buffer);
   for (let i = 0; i < raw.length; i += 1) view[i] = raw.charCodeAt(i);
   return buffer;
+}
+
+function subscriptionUsesKey(subscription: PushSubscription, expected: ArrayBuffer): boolean {
+  const actual = subscription.options.applicationServerKey;
+  if (!actual || actual.byteLength !== expected.byteLength) return false;
+  const actualBytes = new Uint8Array(actual);
+  const expectedBytes = new Uint8Array(expected);
+  return expectedBytes.every((byte, index) => actualBytes[index] === byte);
 }
