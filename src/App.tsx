@@ -31,6 +31,11 @@ type TranscriptView = {
   text: string;
 };
 
+type NotificationTarget = {
+  terminalId: string;
+  workspace: string | null;
+};
+
 const LAUNCH_KINDS: EmbeddedTerminalKind[] = ["codex", "claude", "opencode", "hermes", "shell"];
 const SNAPSHOT_REFRESH_MS = 5000;
 
@@ -49,6 +54,10 @@ export function App() {
   const [selectedTerminalId, setSelectedTerminalId] = useState<string | null>(() =>
     loadPersisted<string | null>(STORAGE_KEYS.selectedTerminalId, null),
   );
+  const [pendingNotificationTarget, setPendingNotificationTarget] = useState<NotificationTarget | null>(() =>
+    parseNotificationTarget(window.location.href) ??
+    loadPersisted<NotificationTarget | null>(STORAGE_KEYS.pendingNotificationTarget, null),
+  );
   const [launchTask, setLaunchTask] = useState("");
   const [launchKind, setLaunchKind] = useState<EmbeddedTerminalKind>("codex");
   const [launchWorkspace, setLaunchWorkspace] = useState("");
@@ -56,12 +65,14 @@ export function App() {
   const [error, setError] = useState<string | null>(null);
   const [transcript, setTranscript] = useState<TranscriptView | null>(null);
   const refreshInFlight = useRef(false);
+  const refreshQueued = useRef(false);
 
   const terminals = snapshot?.terminals ?? [];
   const selectedTerminal =
-    terminals.find((entry) => entry.id === selectedTerminalId) ?? terminals[0] ?? null;
+    terminals.find((entry) => entry.id === selectedTerminalId) ??
+    (selectedTerminalId && pendingNotificationTarget ? null : terminals[0] ?? null);
   const primaryWorkspace =
-    selectedTerminal?.workspace || snapshot?.workspaces[0]?.path || config.projectDir;
+    selectedTerminal?.workspace || pendingNotificationTarget?.workspace || snapshot?.workspaces[0]?.path || config.projectDir;
 
   // Every workspace the user can spawn into: the configured project dir plus any
   // discovered from live terminals or recent sessions, de-duplicated and ordered.
@@ -85,7 +96,10 @@ export function App() {
   }, [primaryWorkspace]);
 
   async function refresh() {
-    if (refreshInFlight.current) return;
+    if (refreshInFlight.current) {
+      refreshQueued.current = true;
+      return;
+    }
     refreshInFlight.current = true;
     setError(null);
     try {
@@ -96,7 +110,22 @@ export function App() {
       setError(messageOf(refreshError));
     } finally {
       refreshInFlight.current = false;
+      if (refreshQueued.current) {
+        refreshQueued.current = false;
+        void refresh();
+      }
     }
+  }
+
+  function queueNotificationTarget(target: NotificationTarget) {
+    if (target.workspace) {
+      primaryWorkspaceRef.current = target.workspace;
+      setLaunchWorkspace(target.workspace);
+    }
+    setPendingNotificationTarget(target);
+    setSelectedTerminalId(target.terminalId);
+    setTab("agents");
+    void refresh();
   }
 
   // Poll only while the tab is foregrounded: a hidden PWA can't show updates, and
@@ -133,21 +162,32 @@ export function App() {
   useEffect(() => persist(STORAGE_KEYS.tab, tab), [tab]);
   useEffect(() => persist(STORAGE_KEYS.snapshot, snapshot), [snapshot]);
   useEffect(() => persist(STORAGE_KEYS.selectedTerminalId, selectedTerminalId), [selectedTerminalId]);
+  useEffect(() => persist(STORAGE_KEYS.pendingNotificationTarget, pendingNotificationTarget), [pendingNotificationTarget]);
+
+  // Apply a notification route only after the live terminal snapshot confirms
+  // the target still exists. Until then, keep the target persisted so a cold
+  // launch or mobile restore cannot drop the tap and fall back to another agent.
+  useEffect(() => {
+    if (!pendingNotificationTarget || !snapshot) return;
+    const target = terminals.find(
+      (terminal) =>
+        terminal.id === pendingNotificationTarget.terminalId &&
+        (!pendingNotificationTarget.workspace || terminal.workspace === pendingNotificationTarget.workspace),
+    );
+    if (!target) return;
+    setSelectedTerminalId(target.id);
+    setLaunchWorkspace(target.workspace);
+    setTab("agents");
+    setPendingNotificationTarget(null);
+  }, [pendingNotificationTarget, snapshot, terminals]);
 
   // Deep-link from a notification: focus the agent it fired for. Covers both the
-  // cold open (the SW launched a new window at /?terminal=…) and a warm focus
-  // (the SW posts a message to the already-open app).
+  // cold open (the SW launched a new window at /?terminal=…&workspace=…) and a
+  // warm focus (the SW posts a message to the already-open app).
   useEffect(() => {
     const focusTerminal = (rawUrl: string) => {
-      try {
-        const terminalId = new URL(rawUrl, window.location.origin).searchParams.get("terminal");
-        if (terminalId) {
-          setSelectedTerminalId(terminalId);
-          setTab("agents");
-        }
-      } catch {
-        // Ignore malformed deep-link URLs.
-      }
+      const target = parseNotificationTarget(rawUrl);
+      if (target) queueNotificationTarget(target);
     };
     focusTerminal(window.location.href);
     if (!("serviceWorker" in navigator)) return;
@@ -787,12 +827,25 @@ function messageOf(value: unknown): string {
   return value instanceof Error ? value.message : String(value);
 }
 
+function parseNotificationTarget(rawUrl: string): NotificationTarget | null {
+  try {
+    const params = new URL(rawUrl, window.location.origin).searchParams;
+    const terminalId = params.get("terminal")?.trim();
+    if (!terminalId) return null;
+    const workspace = params.get("workspace")?.trim() || null;
+    return { terminalId, workspace };
+  } catch {
+    return null;
+  }
+}
+
 // localStorage (not sessionStorage) so the view survives a full OS eviction of the
 // backgrounded PWA, not just an in-tab reload.
 const STORAGE_KEYS = {
   tab: "athena.tab",
   snapshot: "athena.snapshot",
   selectedTerminalId: "athena.selectedTerminalId",
+  pendingNotificationTarget: "athena.pendingNotificationTarget",
 } as const;
 
 function loadPersisted<T>(key: string, fallback: T): T {

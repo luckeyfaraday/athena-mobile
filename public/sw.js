@@ -82,8 +82,9 @@ self.addEventListener("notificationclick", (event) => {
       const clientsList = await self.clients.matchAll({ type: "window", includeUncontrolled: true });
       for (const client of clientsList) {
         if ("focus" in client) {
-          client.postMessage({ type: "athena-notification-click", url: targetUrl });
-          return client.focus();
+          const focused = await client.focus();
+          focused.postMessage({ type: "athena-notification-click", url: targetUrl });
+          return focused;
         }
       }
       if (self.clients.openWindow) return self.clients.openWindow(targetUrl);
