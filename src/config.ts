@@ -11,7 +11,9 @@ export type AppConfig = {
 };
 
 export function readConfig(): AppConfig {
-  const mode = import.meta.env.VITE_ATHENA_MODE === "live" ? "live" : "demo";
+  const mode = import.meta.env.VITE_ATHENA_MODE
+    ? import.meta.env.VITE_ATHENA_MODE === "live" ? "live" : "demo"
+    : import.meta.env.PROD ? "live" : "demo";
   return {
     mode,
     backendUrl: trimSlash(import.meta.env.VITE_ATHENA_BACKEND_URL || (mode === "live" ? "/athena-backend" : "")),
