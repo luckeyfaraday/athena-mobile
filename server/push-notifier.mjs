@@ -22,17 +22,23 @@ import { classifyTerminalAttention } from "./attention.mjs";
 const SECRETS_FILE = "athena-mobile-push.json";
 const CONTROL_DISCOVERY = "electron-control.json";
 const TERMINALS_POLL_MS = 5000;
-// Suppress repeat notifications of the same kind for one terminal within this
-// window, so a long-lived "waiting for approval" prompt pings once, not forever.
-const DEBOUNCE_MS = 45_000;
+// Keep attention alerts sparse. Stream reconnects can replay recent terminal
+// output, so this history lives outside the per-stream state and survives until
+// the notifier process restarts.
+const ACTION_COOLDOWN_MS = 10 * 60_000;
+const UPDATE_COOLDOWN_MS = 30 * 60_000;
+const GLOBAL_COOLDOWN_MS = 30_000;
 const CONTACT = validVapidSubject(process.env.ATHENA_PUSH_CONTACT) || "mailto:athena-mobile@example.com";
 
 export function createPushNotifier() {
   const secrets = loadSecrets();
   webpush.setVapidDetails(CONTACT, secrets.vapid.publicKey, secrets.vapid.privateKey);
 
-  // terminalId -> { controller, carry, lastKind, lastFireTs }
+  // terminalId -> { controller, carry, title }
   const watched = new Map();
+  // terminalId -> { action?: { lastFireTs, fingerprint }, update?: { lastFireTs, fingerprint } }
+  const notificationHistory = new Map();
+  let lastGlobalFireTs = 0;
   let pollTimer = null;
   let stopped = false;
 
@@ -98,7 +104,7 @@ export function createPushNotifier() {
 
   function openStream(control, terminal) {
     const controller = new AbortController();
-    const state = { controller, carry: "", lastKind: null, lastFireTs: 0, title: terminal.title || terminal.id };
+    const state = { controller, carry: "", title: terminal.title || terminal.id };
     watched.set(terminal.id, state);
     void consumeStream(control, terminal, state, () => closeStream(terminal.id));
   }
@@ -152,9 +158,18 @@ export function createPushNotifier() {
 
   function maybeNotify(secrets, terminal, state, kind, body) {
     const now = Date.now();
-    if (kind === state.lastKind && now - state.lastFireTs < DEBOUNCE_MS) return;
-    state.lastKind = kind;
-    state.lastFireTs = now;
+    const cooldown = kind === "action" ? ACTION_COOLDOWN_MS : UPDATE_COOLDOWN_MS;
+    const history = notificationHistory.get(terminal.id) ?? {};
+    const previous = history[kind];
+    const fingerprint = notificationFingerprint(kind, body);
+    if (previous && now - previous.lastFireTs < cooldown) return;
+    if (previous?.fingerprint === fingerprint && now - previous.lastFireTs < UPDATE_COOLDOWN_MS) return;
+    if (now - lastGlobalFireTs < GLOBAL_COOLDOWN_MS) return;
+
+    history[kind] = { lastFireTs: now, fingerprint };
+    notificationHistory.set(terminal.id, history);
+    lastGlobalFireTs = now;
+
     void broadcast(secrets, {
       title: kind === "action" ? "Agent waiting" : "Agent update",
       body,
@@ -258,6 +273,10 @@ function firstLine(text) {
   const clean = text.replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, " ").trim();
   const line = clean.split("\n").map((l) => l.trim()).filter(Boolean).pop() || "Update available.";
   return line.length > 120 ? `${line.slice(0, 117)}...` : line;
+}
+
+function notificationFingerprint(kind, body) {
+  return `${kind}:${body.toLowerCase().replace(/\s+/g, " ").slice(0, 160)}`;
 }
 
 function notificationUrl(terminal) {
