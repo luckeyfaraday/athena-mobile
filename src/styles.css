@@ -813,6 +813,7 @@ button:disabled { opacity: 0.42; cursor: not-allowed; }
   color: var(--text-2);
   font-size: 12px;
 }
+.usageStatus strong { font-weight: inherit; }
 .usageStatus span { color: var(--muted); }
 .usageStatus i { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); flex: 0 0 auto; }
 .usageStatus.status-ok:not(.stale) i { background: var(--text); box-shadow: 0 0 8px rgba(255, 255, 255, 0.5); }
