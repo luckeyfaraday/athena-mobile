@@ -12,6 +12,7 @@ import type {
 } from "../types";
 import type { AppConfig } from "../config";
 import { initialServiceState } from "../config";
+import { recentProjectPaths } from "../workspaces";
 
 export type AthenaClient = {
   snapshot(projectDir?: string): Promise<MobileSnapshot>;
@@ -37,6 +38,15 @@ export type AthenaClient = {
    * entry, or a live terminal's kind and providerSessionId.
    */
   sessionTranscript(ref: TranscriptRef, maxBytes?: number): Promise<string>;
+  /** Project folders with recent native sessions in any workspace, newest first. */
+  recentWorkspaces(): Promise<string[]>;
+  /**
+   * Open a folder as a desktop tab without switching the desktop to it, so a
+   * pane launched from the phone also shows at the desk. Call it only after a
+   * spawn succeeded: spawn's own open_workspace flag opens the tab before it
+   * checks the folder exists, leaving a stray tab after a mistyped path.
+   */
+  openDesktopWorkspace(path: string): Promise<void>;
   /**
    * Same-origin URL of the live SSE output stream for a terminal, or null when
    * streaming is unavailable (demo mode or no control URL configured). Consumed
@@ -46,6 +56,9 @@ export type AthenaClient = {
 };
 
 const REQUEST_TIMEOUT_MS = 15_000;
+// Scanning every provider's sessions across all workspaces took ~23 s on a
+// cold backend cache, well past the default timeout.
+const ALL_SESSIONS_TIMEOUT_MS = 60_000;
 
 export function createAthenaClient(config: AppConfig): AthenaClient {
   if (config.mode === "live") return new HttpAthenaClient(config);
@@ -156,12 +169,29 @@ class HttpAthenaClient implements AthenaClient {
       title: `${labelForKind(session.provider)} Resume`,
       session_label: session.title,
       resume_session_id: session.id,
+    }).then((sessions) => {
+      void this.openDesktopWorkspace(session.workspace).catch(() => {});
+      return sessions;
     });
   }
 
   async sessionTranscript(ref: TranscriptRef, maxBytes = 65_536): Promise<string> {
     const path = `/agents/sessions/${encodeURIComponent(ref.provider)}/${encodeURIComponent(ref.id)}/transcript?max_bytes=${maxBytes}&tail=true`;
     return this.requestText(this.config.backendUrl, path);
+  }
+
+  async recentWorkspaces(): Promise<string[]> {
+    const payload = await this.backendJson<{ sessions: AgentSession[] }>("/agents/sessions/all?limit=200", {
+      signal: AbortSignal.timeout(ALL_SESSIONS_TIMEOUT_MS),
+    });
+    return recentProjectPaths(payload.sessions);
+  }
+
+  async openDesktopWorkspace(path: string): Promise<void> {
+    await this.controlJson("/workspaces/open", {
+      method: "POST",
+      body: JSON.stringify({ project_dir: path, select: false }),
+    });
   }
 
   private async probe(baseUrl: string, label: string) {
@@ -196,7 +226,7 @@ class HttpAthenaClient implements AthenaClient {
         ...init.headers,
       },
     });
-    if (!response.ok) throw new Error(`${response.status} ${response.statusText}`);
+    if (!response.ok) throw new Error(await errorMessage(response));
     return response.json() as Promise<T>;
   }
 
@@ -207,7 +237,7 @@ class HttpAthenaClient implements AthenaClient {
       signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
       headers: this.config.token ? { Authorization: `Bearer ${this.config.token}` } : {},
     });
-    if (!response.ok) throw new Error(`${response.status} ${response.statusText}`);
+    if (!response.ok) throw new Error(await errorMessage(response));
     return response.text();
   }
 }
@@ -326,8 +356,28 @@ class DemoAthenaClient implements AthenaClient {
     ].join("\n");
   }
 
+  async recentWorkspaces(): Promise<string[]> {
+    return ["/home/alan/home_ai/projects/context-workspace", "/home/alan/home_ai/projects/athena-mobile"];
+  }
+
+  async openDesktopWorkspace(): Promise<void> {}
+
   terminalStreamUrl(): string | null {
     return null;
+  }
+}
+
+// Status first, so callers can still test for a code ("404…"), then Athena's
+// own explanation when it sent one, e.g. "Workspace does not exist: /path".
+async function errorMessage(response: Response): Promise<string> {
+  const status = `${response.status} ${response.statusText}`.trim();
+  try {
+    const body = (await response.json()) as { error?: unknown; detail?: unknown };
+    const detail = typeof body.error === "string" ? body.error : typeof body.detail === "string" ? body.detail : null;
+    // The control server stringifies thrown errors, so strip their "Error: " prefix.
+    return detail ? `${status}: ${detail.replace(/^Error:\s*/, "")}` : status;
+  } catch {
+    return status;
   }
 }
 

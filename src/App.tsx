@@ -53,6 +53,10 @@ type NotificationTarget = {
 
 const LAUNCH_KINDS: EmbeddedTerminalKind[] = ["codex", "claude", "opencode", "athena", "grok", "hermes", "shell"];
 const SNAPSHOT_REFRESH_MS = 5000;
+// Recent projects come from a slow scan of every workspace's sessions, so
+// refresh them at most this often while Launch is open.
+const RECENT_WORKSPACES_REFRESH_MS = 5 * 60_000;
+const LAUNCHED_WORKSPACES_LIMIT = 8;
 
 export function App() {
   const config = useMemo(() => readConfig(), []);
@@ -76,7 +80,18 @@ export function App() {
   );
   const [launchTask, setLaunchTask] = useState("");
   const [launchKind, setLaunchKind] = useState<EmbeddedTerminalKind>("codex");
-  const [launchWorkspace, setLaunchWorkspace] = useState("");
+  // null until the user picks or types a folder; "" when they cleared the field.
+  const [launchWorkspace, setLaunchWorkspace] = useState<string | null>(null);
+  // Folders launched from this phone, and project folders from session history
+  // in any workspace. Both persist so the picker is full before any fetch.
+  const [launchedWorkspaces, setLaunchedWorkspaces] = useState<string[]>(() =>
+    loadPersisted<string[]>(STORAGE_KEYS.launchedWorkspaces, []),
+  );
+  const [recentWorkspaces, setRecentWorkspaces] = useState<string[]>(() =>
+    loadPersisted<string[]>(STORAGE_KEYS.recentWorkspaces, []),
+  );
+  const [recentState, setRecentState] = useState<{ loading: boolean; error: string | null }>({ loading: false, error: null });
+  const recentFetchedAt = useRef(0);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [transcript, setTranscript] = useState<TranscriptView | null>(null);
@@ -92,15 +107,20 @@ export function App() {
 
   // Every workspace the user can spawn into: the configured project dir plus any
   // discovered from live terminals or recent sessions, de-duplicated and ordered.
+  // Every workspace the user can spawn into: live terminals' workspaces first,
+  // then folders launched from here, the configured project dir, and recent
+  // projects from session history, de-duplicated in that order.
   const workspaceOptions = useMemo(() => {
     const paths = new Set<string>();
+    for (const terminal of terminals) paths.add(terminal.workspace);
+    for (const path of launchedWorkspaces) paths.add(path);
     if (config.projectDir) paths.add(config.projectDir);
     for (const workspace of snapshot?.workspaces ?? []) paths.add(workspace.path);
-    for (const terminal of terminals) paths.add(terminal.workspace);
+    for (const path of recentWorkspaces) paths.add(path);
     return Array.from(paths).filter(Boolean);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [snapshot, terminals, config.projectDir]);
-  const launchWorkspaceResolved = launchWorkspace || workspaceOptions[0] || primaryWorkspace;
+  }, [snapshot, terminals, launchedWorkspaces, recentWorkspaces, config.projectDir]);
+  const launchWorkspaceResolved = launchWorkspace ?? (workspaceOptions[0] || primaryWorkspace || "");
 
   // The polling effect below captures `refresh` once (empty deps), so route the
   // live workspace through a ref it reads on every tick — otherwise each poll
@@ -177,6 +197,27 @@ export function App() {
 
   // Mirror the cross-reload state back to storage as it changes.
   useEffect(() => persist(STORAGE_KEYS.tab, tab), [tab]);
+  useEffect(() => persist(STORAGE_KEYS.launchedWorkspaces, launchedWorkspaces), [launchedWorkspaces]);
+  useEffect(() => persist(STORAGE_KEYS.recentWorkspaces, recentWorkspaces), [recentWorkspaces]);
+
+  // Load recent projects when Launch opens. The request is not cancelled on
+  // cleanup: the result is still worth keeping if the user has moved on.
+  useEffect(() => {
+    if (tab !== "launch" || Date.now() - recentFetchedAt.current < RECENT_WORKSPACES_REFRESH_MS) return;
+    recentFetchedAt.current = Date.now();
+    setRecentState({ loading: true, error: null });
+    client
+      .recentWorkspaces()
+      .then((paths) => {
+        setRecentWorkspaces(paths);
+        setRecentState({ loading: false, error: null });
+      })
+      .catch((recentError) => {
+        // Retry on the next visit rather than waiting out the refresh interval.
+        recentFetchedAt.current = 0;
+        setRecentState({ loading: false, error: messageOf(recentError) });
+      });
+  }, [tab, client]);
   useEffect(() => persist(STORAGE_KEYS.agentView, agentView), [agentView]);
   useEffect(() => persist(STORAGE_KEYS.snapshot, snapshot), [snapshot]);
   useEffect(() => persist(STORAGE_KEYS.selectedTerminalId, selectedTerminalId), [selectedTerminalId]);
@@ -242,7 +283,7 @@ export function App() {
 
   async function launchTerminal() {
     const task = launchTask.trim();
-    const workspace = launchWorkspaceResolved;
+    const workspace = launchWorkspaceResolved.trim().replace(/(.)\/+$/, "$1");
     // A task is optional now — a bare agent/shell can be spawned to type into live.
     if (!workspace) return;
     setBusy(true);
@@ -255,7 +296,11 @@ export function App() {
         title: `${labelForKind(launchKind)} Mobile`,
         context_mode: task ? "task" : "none",
       });
+      void client.openDesktopWorkspace(workspace).catch(() => {});
       setLaunchTask("");
+      setLaunchedWorkspaces((current) =>
+        [workspace, ...current.filter((path) => path !== workspace)].slice(0, LAUNCHED_WORKSPACES_LIMIT),
+      );
       await refresh();
       const spawned = sessions[0]?.id ?? null;
       if (spawned) setSelectedTerminalId(spawned);
@@ -357,6 +402,7 @@ export function App() {
             task={launchTask}
             workspaces={workspaceOptions}
             selectedWorkspace={launchWorkspaceResolved}
+            recentState={recentState}
             busy={busy}
             onKindChange={setLaunchKind}
             onTaskChange={setLaunchTask}
@@ -565,6 +611,7 @@ function LaunchView({
   task,
   workspaces,
   selectedWorkspace,
+  recentState,
   busy,
   onKindChange,
   onTaskChange,
@@ -575,6 +622,7 @@ function LaunchView({
   task: string;
   workspaces: string[];
   selectedWorkspace: string;
+  recentState: { loading: boolean; error: string | null };
   busy: boolean;
   onKindChange: (kind: EmbeddedTerminalKind) => void;
   onTaskChange: (value: string) => void;
@@ -604,15 +652,30 @@ function LaunchView({
 
       <div className="field">
         <span>Workspace</span>
-        {workspaces.length === 0 ? (
-          <p className="emptyText">No workspace discovered.</p>
-        ) : (
+        {/* Any folder on the laptop; picking a project below fills it in. */}
+        <input
+          className="pathInput"
+          value={selectedWorkspace}
+          onChange={(event) => onWorkspaceChange(event.target.value)}
+          placeholder="/home/alan/home_ai/projects/…"
+          aria-label="Workspace folder"
+          autoCapitalize="off"
+          autoCorrect="off"
+          autoComplete="off"
+          spellCheck={false}
+        />
+        {recentState.loading ? (
+          <p className="emptyText">Loading recent projects…</p>
+        ) : recentState.error ? (
+          <p className="emptyText">Couldn't load recent projects ({recentState.error}).</p>
+        ) : null}
+        {workspaces.length > 0 && (
           <div className="workspacePicker">
             {workspaces.map((path) => (
               <button
                 key={path}
                 type="button"
-                className={path === selectedWorkspace ? "workspaceOption active" : "workspaceOption"}
+                className={path === selectedWorkspace.trim() ? "workspaceOption active" : "workspaceOption"}
                 onClick={() => onWorkspaceChange(path)}
               >
                 <Cpu size={15} />
@@ -636,7 +699,7 @@ function LaunchView({
         />
       </label>
 
-      <button className="primaryButton wide" type="button" onClick={onLaunch} disabled={busy || !selectedWorkspace}>
+      <button className="primaryButton wide" type="button" onClick={onLaunch} disabled={busy || !selectedWorkspace.trim()}>
         <Plus size={17} /> Launch {labelForKind(kind)}
       </button>
     </section>
@@ -953,6 +1016,8 @@ function parseNotificationTarget(rawUrl: string): NotificationTarget | null {
 // backgrounded PWA, not just an in-tab reload.
 const STORAGE_KEYS = {
   tab: "athena.tab",
+  launchedWorkspaces: "athena.launchedWorkspaces",
+  recentWorkspaces: "athena.recentWorkspaces",
   agentView: "athena.agentView",
   snapshot: "athena.snapshot",
   selectedTerminalId: "athena.selectedTerminalId",
