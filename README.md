@@ -8,6 +8,7 @@ laptop and opened from the phone over Tailscale, that lets you:
 - launch Codex, Claude, OpenCode, Athena Code, Grok, Hermes, or shell terminals in a workspace
 - browse native session history, read transcripts, and resume a session in a new terminal
 - get Web Push notifications when an agent is waiting on an answer, finishes a long turn, or crashes
+- see how much of each Claude and Codex subscription window is used, per signed-in account
 
 It talks to Athena only through Athena's existing HTTP APIs: the FastAPI backend
 and the Electron control server, both localhost-only. It has no shared code with
@@ -91,6 +92,21 @@ waits on you (`server/attention.mjs`):
 
 Answering within those windows (for example at the desk) sends no alert. Run
 the timing tests with `npm test`.
+
+## Subscription usage
+
+The strip under the header shows one chip per Claude or Codex account signed in
+on the laptop, with how much of its tightest window is used. Tap a chip for the
+plan, every quota window with its reset countdown, and a manual refresh.
+
+The laptop's Athena backend owns the provider logins and a shared cache
+(`GET /usage/accounts`, `POST /usage/refresh`, reached through
+`/athena-backend`), so the phone never sees a token and never calls a provider.
+Polling the cache is cheap: every 60 s, every 3 s while a refresh is running,
+and paused while the app is in the background. A dashed chip with hatched bars
+is a last-known value, not a live reading. That covers an expired sign-in, a
+failed refresh, or a laptop that stopped answering. The strip stays hidden when
+the running Athena build predates usage monitoring.
 
 ## First release package
 

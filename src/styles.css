@@ -671,3 +671,202 @@ button:disabled { opacity: 0.42; cursor: not-allowed; }
 
 /* xterm renders the full 96 columns; the mount scrolls horizontally to reach them. */
 .mobileTerminalMount .xterm { height: 100%; }
+
+/* ── SUBSCRIPTION USAGE ────────────────────────────────── */
+.usageStrip {
+  flex: 0 0 auto;
+  padding: 8px 12px;
+  display: flex;
+  gap: 8px;
+  overflow-x: auto;
+  scroll-snap-type: x proximity;
+  scrollbar-width: none;
+  border-bottom: 1px solid var(--line);
+}
+.usageStrip::-webkit-scrollbar { display: none; }
+.usageChip {
+  flex: 0 0 auto;
+  width: 164px;
+  min-height: 44px;
+  padding: 7px 9px;
+  display: grid;
+  align-content: center;
+  gap: 6px;
+  scroll-snap-align: start;
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  background: var(--panel);
+  color: var(--text-2);
+  text-align: left;
+}
+.usageChip:active { background: var(--panel-2); }
+.usageChipHead {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+}
+.usageChipName { flex: 0 0 auto; color: var(--text); }
+/* Only the profile label gives way, so the provider always stays readable. */
+.usageChipProfile {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  color: var(--muted);
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.usageChipHead strong { margin-left: auto; }
+.usageChipHead strong,
+.usageWindowHead strong {
+  color: var(--text);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.usageChipHead strong.level-high,
+.usageChipHead strong.level-full,
+.usageWindowHead strong.level-high,
+.usageWindowHead strong.level-full { color: var(--danger); }
+.usageChipNote { color: var(--muted); font-size: 11px; }
+.usageChipNote.status-expired,
+.usageChipNote.status-error,
+.usageChipNote.status-rate_limited { color: var(--danger); }
+.usageTracks { display: grid; gap: 3px; }
+.usageTrack {
+  position: relative;
+  height: 3px;
+  display: block;
+  overflow: hidden;
+  border-radius: 999px;
+  background: var(--panel-3);
+}
+.usageTrack.large { height: 7px; }
+.usageFill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  display: block;
+  min-width: 2px;
+  border-radius: inherit;
+  background: var(--provider-hue, var(--text-2));
+  transition: width 0.4s ease;
+}
+.usageChip.claude, .usageSheet.claude { --provider-hue: var(--claude); }
+.usageChip.codex, .usageSheet.codex { --provider-hue: var(--codex); }
+.usageFill.level-high,
+.usageFill.level-full { background: var(--danger); }
+/* A last-known reading is dimmed and hatched so it never passes for live. */
+.usageChip.notLive { border-style: dashed; }
+.usageChip.notLive .usageFill,
+.usageWindows.stale .usageFill {
+  opacity: 0.45;
+  background-image: repeating-linear-gradient(135deg, transparent 0 3px, rgba(0, 0, 0, 0.45) 3px 5px);
+}
+.usageChip.notLive .usageChipHead strong { color: var(--muted); }
+
+.usageSheet { max-height: 86vh; }
+.usageSheet:focus { outline: none; }
+.usagePlan {
+  margin-left: 8px;
+  padding: 1px 7px;
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+  color: var(--text-2);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  vertical-align: 1px;
+}
+.usageTabs {
+  flex: 0 0 auto;
+  padding: 10px 16px 0;
+  display: flex;
+  gap: 6px;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.usageTab {
+  flex: 0 0 auto;
+  min-height: 34px;
+  padding: 0 12px;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--text-2);
+  font-size: 12px;
+}
+.usageTab.active { border-color: var(--text); background: var(--panel-2); color: var(--text); }
+.usageSheetBody {
+  padding: 14px 16px calc(env(safe-area-inset-bottom) + 16px);
+  display: grid;
+  gap: 14px;
+  overflow-y: auto;
+}
+.usageStatus {
+  margin: 0;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--text-2);
+  font-size: 12px;
+}
+.usageStatus strong { font-weight: inherit; }
+.usageStatus span { color: var(--muted); }
+.usageStatus i { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); flex: 0 0 auto; }
+.usageStatus.status-ok:not(.stale) i { background: var(--text); box-shadow: 0 0 8px rgba(255, 255, 255, 0.5); }
+.usageStatus.status-loading i { animation: usagePulse 1.2s ease-in-out infinite; }
+.usageStatus.status-expired i,
+.usageStatus.status-error i,
+.usageStatus.status-rate_limited i,
+.usageStatus.status-signed_out i { background: var(--danger); }
+.usageMessage {
+  margin: 0;
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+  color: var(--text-2);
+  font-size: 12px;
+  line-height: 1.45;
+}
+.usageMessage svg { margin-top: 2px; flex: 0 0 auto; color: var(--danger); }
+.usageWindows { margin: 0; padding: 0; list-style: none; display: grid; gap: 14px; }
+.usageWindow { display: grid; gap: 6px; }
+.usageWindowHead { display: flex; justify-content: space-between; font-size: 13px; }
+.usageWindow small { color: var(--muted); font-size: 11px; }
+.usageEmptyNote { margin: 0; color: var(--muted); font-size: 12px; }
+.usageProfiles { display: grid; gap: 4px; }
+.usageProfiles > span {
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+.usageProfiles p {
+  margin: 0;
+  overflow: hidden;
+  color: var(--text-2);
+  font-size: 12px;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.usageProfiles code { color: var(--muted); font-family: var(--font-mono); font-size: 11px; }
+.usageSheetFoot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  color: var(--muted);
+  font-size: 11px;
+}
+.usageFootnote { margin: 0; color: var(--faint); font-size: 11px; line-height: 1.45; }
+.spinning { animation: usageSpin 1s linear infinite; }
+@keyframes usageSpin { to { transform: rotate(360deg); } }
+@keyframes usagePulse { 50% { opacity: 0.35; } }
+@media (prefers-reduced-motion: reduce) {
+  .spinning, .usageStatus.status-loading i { animation: none; }
+  .usageFill { transition: none; }
+}
