@@ -487,7 +487,24 @@ button:disabled { opacity: 0.42; cursor: not-allowed; }
 }
 .field textarea:focus { border-color: var(--text-2); }
 
-.workspacePicker { display: flex; flex-direction: column; gap: 8px; }
+/* Recent projects can run to a dozen or more; scroll them in place so the
+   task field and Launch button stay close. */
+.workspacePicker { display: flex; flex-direction: column; gap: 8px; max-height: 300px; margin-top: 10px; overflow-y: auto; }
+.workspacePicker > * { flex-shrink: 0; }
+.pathInput {
+  width: 100%;
+  padding: 11px 12px;
+  border: 1px solid var(--line-strong);
+  border-radius: 10px;
+  background: var(--panel);
+  color: var(--text);
+  font-family: var(--font-mono);
+  /* 16px keeps iOS Safari from zooming the page when the field is focused. */
+  font-size: 16px;
+  outline: none;
+}
+.pathInput:focus { border-color: var(--text-2); }
+.field .emptyText { margin: 8px 0 0; }
 .workspaceOption {
   display: flex;
   align-items: center;
