@@ -19,7 +19,7 @@ export type HermesStatus = {
   message: string;
 };
 
-export type EmbeddedTerminalKind = "shell" | "hermes" | "codex" | "opencode" | "claude";
+export type EmbeddedTerminalKind = "shell" | "hermes" | "codex" | "opencode" | "claude" | "athena" | "grok";
 
 export type EmbeddedTerminalSession = {
   id: string;
@@ -44,8 +44,10 @@ export type TerminalBuffer = {
   max_chars: number;
 };
 
-export type AgentSessionProvider = "codex" | "opencode" | "claude" | "hermes";
+export type AgentSessionProvider = "codex" | "opencode" | "claude" | "hermes" | "athena" | "grok";
 
+// Mirrors the backend's AgentSession payload, which is snake_case (Python
+// dataclass), unlike the camelCase terminals from the Electron control server.
 export type AgentSession = {
   id: string;
   provider: AgentSessionProvider;
@@ -54,12 +56,12 @@ export type AgentSession = {
   branch: string | null;
   model: string | null;
   agent: string | null;
-  createdAt: string;
-  updatedAt: string;
+  created_at: string;
+  updated_at: string;
   status: "running" | "exited" | "historical";
-  terminalId: string | null;
+  terminal_id: string | null;
   pid: number | null;
-  resumeCommand: string | null;
+  resume_command: string | null;
   metadata: Record<string, string>;
 };
 
@@ -70,12 +72,21 @@ export type WorkspaceSummary = {
   recentSessions: number;
 };
 
+/** Why a snapshot section failed to load; absent means it loaded (or wasn't requested). */
+export type SnapshotErrors = {
+  hermes?: string;
+  terminals?: string;
+  sessions?: string;
+};
+
 export type MobileSnapshot = {
   service: ServiceState;
   hermes: HermesStatus | null;
   workspaces: WorkspaceSummary[];
   terminals: EmbeddedTerminalSession[];
   recentSessions: AgentSession[];
+  /** Optional so snapshots persisted by older builds still hydrate. */
+  errors?: SnapshotErrors;
 };
 
 export type SpawnTerminalRequest = {

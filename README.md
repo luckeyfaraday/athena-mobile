@@ -1,8 +1,16 @@
 # Athena Mobile
 
-Mobile companion scaffold for Athena. The app is designed as a PWA that can later talk to a laptop-side Athena mobile gateway over Tailscale.
+Mobile companion for Athena (`context-workspace`). It is a PWA, served from the
+laptop and opened from the phone over Tailscale, that lets you:
 
-This repository does not modify `context-workspace`. It reads the current Athena API shapes and keeps mobile access behind configurable clients.
+- watch and type into Athena's live agent terminals (xterm.js over the control server's SSE stream)
+- launch Codex, Claude, OpenCode, Athena Code, Grok, Hermes, or shell terminals in a workspace
+- browse native session history, read transcripts, and resume a session in a new terminal
+- get Web Push notifications when an agent appears to need input or finishes
+
+It talks to Athena only through Athena's existing HTTP APIs: the FastAPI backend
+and the Electron control server, both localhost-only. It has no shared code with
+`context-workspace`; `src/types.ts` mirrors the API shapes.
 
 ## Run
 

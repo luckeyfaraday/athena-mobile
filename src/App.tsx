@@ -17,11 +17,11 @@ import {
   TerminalSquare,
   X,
 } from "lucide-react";
-import { createAthenaClient } from "./api/athenaClient";
+import { createAthenaClient, summarizeWorkspaces } from "./api/athenaClient";
 import { readConfig } from "./config";
 import { enablePush, pushState, sendTestPush, type PushState } from "./push/notifications";
 import { MobileTerminal } from "./components/MobileTerminal";
-import type { AgentSession, EmbeddedTerminalKind, EmbeddedTerminalSession, MobileSnapshot } from "./types";
+import type { AgentSession, EmbeddedTerminalKind, EmbeddedTerminalSession, MobileSnapshot, SnapshotErrors } from "./types";
 
 type Tab = "agents" | "launch" | "history" | "workspaces";
 
@@ -36,7 +36,7 @@ type NotificationTarget = {
   workspace: string | null;
 };
 
-const LAUNCH_KINDS: EmbeddedTerminalKind[] = ["codex", "claude", "opencode", "hermes", "shell"];
+const LAUNCH_KINDS: EmbeddedTerminalKind[] = ["codex", "claude", "opencode", "athena", "grok", "hermes", "shell"];
 const SNAPSHOT_REFRESH_MS = 5000;
 
 export function App() {
@@ -104,7 +104,7 @@ export function App() {
     setError(null);
     try {
       const next = await client.snapshot(primaryWorkspaceRef.current || undefined);
-      setSnapshot(next);
+      setSnapshot((previous) => keepLastLoaded(previous, next));
       setSelectedTerminalId((current) => current ?? next.terminals[0]?.id ?? null);
     } catch (refreshError) {
       setError(messageOf(refreshError));
@@ -279,6 +279,7 @@ export function App() {
 
   const backendHealthy = Boolean(snapshot?.service.backend.healthy);
   const controlHealthy = Boolean(snapshot?.service.control.healthy);
+  const banner = error ?? loadErrorMessage(snapshot);
 
   return (
     <div className="appShell">
@@ -300,7 +301,7 @@ export function App() {
         </div>
       </header>
 
-      {error && <div className="errorBanner">{error}</div>}
+      {banner && <div className="errorBanner">{banner}</div>}
 
       <main className="content">
         {tab === "agents" && (
@@ -612,7 +613,7 @@ function HistoryView({
       <div className="emptyState">
         <History size={28} />
         <strong>No recent sessions</strong>
-        <span>Native Codex, Claude, OpenCode, and Hermes sessions for this workspace appear here.</span>
+        <span>Native Codex, Claude, OpenCode, Athena Code, Grok, and Hermes sessions for this workspace appear here.</span>
       </div>
     );
   }
@@ -631,7 +632,7 @@ function HistoryView({
               <span className={`providerDot ${session.provider}`} />
               <div className="historyText">
                 <strong>{session.title}</strong>
-                <small>{labelForKind(session.provider)} · {formatRelativeTime(session.updatedAt)} · {session.status}</small>
+                <small>{labelForKind(session.provider)} · {formatRelativeTime(session.updated_at)} · {session.status}</small>
               </div>
             </div>
             <div className="historyActions">
@@ -788,8 +789,11 @@ function Metric({ label, value, detail }: { label: string; value: string; detail
   );
 }
 
+// Names the desktop app uses where plain capitalization would be wrong.
+const KIND_LABELS: Record<string, string> = { athena: "Athena Code", opencode: "OpenCode" };
+
 function labelForKind(kind: string): string {
-  return kind.charAt(0).toUpperCase() + kind.slice(1);
+  return KIND_LABELS[kind] ?? kind.charAt(0).toUpperCase() + kind.slice(1);
 }
 
 function workspaceName(path: string): string {
@@ -825,6 +829,32 @@ function formatRelativeTime(iso: string): string {
 
 function messageOf(value: unknown): string {
   return value instanceof Error ? value.message : String(value);
+}
+
+// A section that failed to refresh keeps its last loaded contents instead of
+// collapsing to an empty list, so a network blip on the phone doesn't read as
+// "no agents" or tear down the open terminal. The failure still shows in the
+// banner via loadErrorMessage.
+function keepLastLoaded(previous: MobileSnapshot | null, next: MobileSnapshot): MobileSnapshot {
+  if (!previous || !next.errors) return next;
+  const terminals = next.errors.terminals ? previous.terminals : next.terminals;
+  const recentSessions = next.errors.sessions ? previous.recentSessions : next.recentSessions;
+  const hermes = next.errors.hermes ? previous.hermes : next.hermes;
+  return { ...next, terminals, recentSessions, hermes, workspaces: summarizeWorkspaces(terminals, recentSessions) };
+}
+
+const SECTION_LABELS: Record<keyof SnapshotErrors, string> = {
+  terminals: "live agents",
+  sessions: "session history",
+  hermes: "Hermes status",
+};
+
+function loadErrorMessage(snapshot: MobileSnapshot | null): string | null {
+  const errors = snapshot?.errors ?? {};
+  const failures = (Object.keys(SECTION_LABELS) as (keyof SnapshotErrors)[])
+    .filter((section) => errors[section])
+    .map((section) => `${SECTION_LABELS[section]} (${errors[section]})`);
+  return failures.length ? `Couldn't refresh ${failures.join(", ")}.` : null;
 }
 
 function parseNotificationTarget(rawUrl: string): NotificationTarget | null {

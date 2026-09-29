@@ -25,6 +25,8 @@
   --claude: #b59ad6;
   --opencode: #8fc6a3;
   --hermes: #8aa6c4;
+  --athena: #d4a38a;
+  --grok: #d08ca0;
   --shell: #9a9a9a;
 
   --font-body: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Roboto, sans-serif;
@@ -239,6 +241,8 @@ button:disabled { opacity: 0.42; cursor: not-allowed; }
 .providerDot.claude { background: var(--claude); }
 .providerDot.opencode { background: var(--opencode); }
 .providerDot.hermes { background: var(--hermes); }
+.providerDot.athena { background: var(--athena); }
+.providerDot.grok { background: var(--grok); }
 .providerDot.shell { background: var(--shell); }
 
 .terminalCard {

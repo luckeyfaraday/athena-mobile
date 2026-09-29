@@ -1,4 +1,4 @@
-import { defineConfig } from "vite";
+import { defineConfig, type Connect, type PreviewServer, type ViteDevServer } from "vite";
 import react from "@vitejs/plugin-react";
 import fs from "node:fs";
 import http from "node:http";
@@ -8,7 +8,7 @@ import path from "node:path";
 import { athenaPushPlugin } from "./server/push-plugin.mjs";
 
 export default defineConfig({
-  plugins: [react(), athenaControlProxyPlugin(), athenaPushPlugin()],
+  plugins: [react(), athenaProxyPlugin(), athenaPushPlugin()],
   server: {
     host: resolveHost(),
     port: 5174,
@@ -16,31 +16,42 @@ export default defineConfig({
     // forwarding the tailnet hostname as the Host header. Vite's dev-server host
     // check must accept it; any *.ts.net MagicDNS name is allowed.
     allowedHosts: [".ts.net"],
-    proxy: {
-      "/athena-backend": {
-        target: process.env.ATHENA_BACKEND_TARGET || discoveryUrl("backend.json") || "http://127.0.0.1:8000",
-        changeOrigin: true,
-        rewrite: (requestPath) => requestPath.replace(/^\/athena-backend/, ""),
-      },
-    },
   },
 });
 
-function athenaControlProxyPlugin() {
+// Athena picks fresh ports for both services (and a fresh control token) on
+// every launch, so each request re-reads discovery instead of fixing the target
+// at startup — otherwise restarting Athena strands the dev server on a dead port.
+function athenaProxyPlugin() {
+  const mount = (middlewares: Connect.Server) => {
+    middlewares.use("/athena-backend", (req, res) => {
+      proxyAthenaRequest(req, res, "backend.json", process.env.ATHENA_BACKEND_TARGET, "http://127.0.0.1:8000");
+    });
+    middlewares.use("/athena-control", (req, res) => {
+      proxyAthenaRequest(req, res, "electron-control.json", process.env.ATHENA_CONTROL_TARGET, "http://127.0.0.1:9000");
+    });
+  };
   return {
-    name: "athena-control-dynamic-proxy",
-    configureServer(server) {
-      server.middlewares.use("/athena-control", (req, res) => {
-        proxyControlRequest(req, res);
-      });
+    name: "athena-dynamic-proxy",
+    configureServer(server: ViteDevServer) {
+      mount(server.middlewares);
+    },
+    configurePreviewServer(server: PreviewServer) {
+      mount(server.middlewares);
     },
   };
 }
 
-function proxyControlRequest(req: http.IncomingMessage, res: http.ServerResponse): void {
-  const baseUrl = process.env.ATHENA_CONTROL_TARGET || discoveryUrl("electron-control.json") || "http://127.0.0.1:9000";
+function proxyAthenaRequest(
+  req: http.IncomingMessage,
+  res: http.ServerResponse,
+  discoveryFile: string,
+  override: string | undefined,
+  fallback: string,
+): void {
+  const baseUrl = override || discoveryUrl(discoveryFile) || fallback;
   const target = new URL(req.url || "/", baseUrl);
-  const token = discoveryToken("electron-control.json");
+  const token = discoveryToken(discoveryFile);
   const headers = { ...req.headers, host: target.host };
   delete headers.origin;
   delete headers.referer;
@@ -61,7 +72,7 @@ function proxyControlRequest(req: http.IncomingMessage, res: http.ServerResponse
   upstream.on("error", (error) => {
     if (res.headersSent) return res.end();
     res.writeHead(502, { "Content-Type": "application/json" });
-    res.end(JSON.stringify({ error: `Electron control proxy failed: ${error.message}` }));
+    res.end(JSON.stringify({ error: `Athena proxy failed: ${error.message}` }));
   });
   req.pipe(upstream);
 }
