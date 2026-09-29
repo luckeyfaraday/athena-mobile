@@ -5,9 +5,9 @@
 //   1. Owns a VAPID keypair + the phone's Web Push subscriptions (persisted
 //      0600 alongside Athena's other discovery secrets).
 //   2. Serves the client subscribe flow under /athena-push/*.
-//   3. Watches each live terminal's SSE stream on the control server, runs the
-//      desktop's attention classifier over the output, and — on a transition to
-//      "needs input" / "finished" — sends an encrypted Web Push to the phone.
+//   3. Watches each live terminal's SSE stream on the control server, tracks
+//      when an agent goes quiet (attention.mjs), and sends an encrypted Web Push
+//      when one is waiting on an answer or has finished its turn.
 //
 // The push itself is delivered by the platform push service (FCM/Apple), so the
 // phone is notified even when the PWA is backgrounded or off the tailnet. The
@@ -17,16 +17,18 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import webpush from "web-push";
-import { classifyTerminalAttention } from "./attention.mjs";
+import { AttentionTracker } from "./attention.mjs";
 
 const SECRETS_FILE = "athena-mobile-push.json";
 const CONTROL_DISCOVERY = "electron-control.json";
 const TERMINALS_POLL_MS = 5000;
-// Keep attention alerts sparse. Stream reconnects can replay recent terminal
-// output, so this history lives outside the per-stream state and survives until
-// the notifier process restarts.
-const ACTION_COOLDOWN_MS = 10 * 60_000;
-const UPDATE_COOLDOWN_MS = 30 * 60_000;
+const ATTENTION_TICK_MS = 1000;
+// Rate limits on top of attention.mjs's one-alert-per-burst rule. A "finished"
+// alert for a terminal that alerted recently waits out FINISHED_COOLDOWN_MS
+// instead of being dropped, so a quick follow-up turn still alerts if the agent
+// is left waiting. Approval prompts block the agent, so they only share the
+// global limit.
+const FINISHED_COOLDOWN_MS = 10 * 60_000;
 const GLOBAL_COOLDOWN_MS = 30_000;
 const CONTACT = validVapidSubject(process.env.ATHENA_PUSH_CONTACT) || "mailto:athena-mobile@example.com";
 
@@ -34,12 +36,16 @@ export function createPushNotifier() {
   const secrets = loadSecrets();
   webpush.setVapidDetails(CONTACT, secrets.vapid.publicKey, secrets.vapid.privateKey);
 
-  // terminalId -> { controller, carry, title }
+  // terminalId -> { controller, terminal }
   const watched = new Map();
-  // terminalId -> { action?: { lastFireTs, fingerprint }, update?: { lastFireTs, fingerprint } }
-  const notificationHistory = new Map();
+  // Burst state lives outside the per-stream state so a stream reconnect
+  // continues the current burst instead of starting a new one.
+  const attention = new AttentionTracker();
+  // terminalId -> when its last "finished" alert went out
+  const lastFinishedAt = new Map();
   let lastGlobalFireTs = 0;
   let pollTimer = null;
+  let tickTimer = null;
   let stopped = false;
 
   const middleware = async (req, res) => {
@@ -81,7 +87,7 @@ export function createPushNotifier() {
     try {
       // No subscribers → don't hold streams open against the control server.
       if (secrets.subscriptions.length === 0) {
-        for (const id of [...watched.keys()]) closeStream(id);
+        closeAll();
       } else {
         const control = readControlDiscovery();
         if (control.baseUrl) {
@@ -92,6 +98,10 @@ export function createPushNotifier() {
           }
           for (const id of [...watched.keys()]) {
             if (!liveIds.has(id)) closeStream(id);
+          }
+          attention.retain(liveIds);
+          for (const id of [...lastFinishedAt.keys()]) {
+            if (!liveIds.has(id)) lastFinishedAt.delete(id);
           }
         }
       }
@@ -104,7 +114,7 @@ export function createPushNotifier() {
 
   function openStream(control, terminal) {
     const controller = new AbortController();
-    const state = { controller, carry: "", title: terminal.title || terminal.id };
+    const state = { controller, terminal };
     watched.set(terminal.id, state);
     void consumeStream(control, terminal, state, () => closeStream(terminal.id));
   }
@@ -114,6 +124,12 @@ export function createPushNotifier() {
     if (!state) return;
     state.controller.abort();
     watched.delete(id);
+  }
+
+  function closeAll() {
+    for (const id of [...watched.keys()]) closeStream(id);
+    attention.retain(new Set());
+    lastFinishedAt.clear();
   }
 
   async function consumeStream(control, terminal, state, onEnd) {
@@ -126,12 +142,12 @@ export function createPushNotifier() {
       if (!response.ok || !response.body) return onEnd();
       for await (const evt of parseSse(response.body, state.controller.signal)) {
         if (evt.event === "data") {
-          handleOutput(secrets, terminal, state, decodeBase64(evt.data));
+          attention.output(terminal.id, decodeBase64(evt.data), Date.now());
         } else if (evt.event === "exit") {
-          maybeNotify(secrets, terminal, state, "update", `${state.title} finished.`);
+          notifyExit(terminal, parseExitCode(evt.data));
           return onEnd();
         }
-        // "snapshot" is the initial buffer; skip it so we only react to new output.
+        // "snapshot" is the initial buffer; skip it so only new output counts.
       }
     } catch {
       // Aborted or network error — drop this stream; the poll will re-open it
@@ -141,40 +157,49 @@ export function createPushNotifier() {
     }
   }
 
-  function handleOutput(secrets, terminal, state, chunk) {
-    if (!chunk) return;
-    // Classify the new chunk plus a small carryover, so a phrase split across
-    // two SSE frames still matches.
-    const window = state.carry + chunk;
-    state.carry = chunk.slice(-200);
-    const kind = classifyTerminalAttention(window);
-    if (!kind) return;
-    const body =
-      kind === "action"
-        ? `${state.title} needs your input.`
-        : `${state.title}: ${firstLine(window)}`;
-    maybeNotify(secrets, terminal, state, kind, body);
+  // Rate-limited alerts are skipped without acknowledging, so a later tick
+  // sends them if the agent is still waiting by then.
+  function tick() {
+    const now = Date.now();
+    for (const { terminal } of watched.values()) {
+      const kind = attention.due(terminal.id, now);
+      if (!kind || now - lastGlobalFireTs < GLOBAL_COOLDOWN_MS) continue;
+      if (kind === "finished" && now - (lastFinishedAt.get(terminal.id) ?? -Infinity) < FINISHED_COOLDOWN_MS) continue;
+
+      attention.acknowledge(terminal.id);
+      lastGlobalFireTs = now;
+      if (kind === "finished") lastFinishedAt.set(terminal.id, now);
+      const name = terminal.title || terminal.id;
+      void broadcast(
+        secrets,
+        kind === "action"
+          ? {
+              title: "Agent waiting",
+              body: `${name} is waiting for your answer.`,
+              tag: `athena-${terminal.id}`,
+              url: notificationUrl(terminal, "terminal"),
+            }
+          : {
+              title: "Agent finished",
+              body: `${name} finished and is waiting for you.`,
+              tag: `athena-${terminal.id}`,
+              url: notificationUrl(terminal, "chat"),
+            },
+      );
+    }
   }
 
-  function maybeNotify(secrets, terminal, state, kind, body) {
-    const now = Date.now();
-    const cooldown = kind === "action" ? ACTION_COOLDOWN_MS : UPDATE_COOLDOWN_MS;
-    const history = notificationHistory.get(terminal.id) ?? {};
-    const previous = history[kind];
-    const fingerprint = notificationFingerprint(kind, body);
-    if (previous && now - previous.lastFireTs < cooldown) return;
-    if (previous?.fingerprint === fingerprint && now - previous.lastFireTs < UPDATE_COOLDOWN_MS) return;
-    if (now - lastGlobalFireTs < GLOBAL_COOLDOWN_MS) return;
-
-    history[kind] = { lastFireTs: now, fingerprint };
-    notificationHistory.set(terminal.id, history);
-    lastGlobalFireTs = now;
-
+  // Only a failing exit is worth a push: quitting an agent or stopping its
+  // terminal is something the user just did. The terminal is gone afterwards,
+  // so the alert opens the app rather than deep-linking to it.
+  function notifyExit(terminal, exitCode) {
+    if (typeof exitCode !== "number" || exitCode === 0) return;
+    lastGlobalFireTs = Date.now();
     void broadcast(secrets, {
-      title: kind === "action" ? "Agent waiting" : "Agent update",
-      body,
+      title: "Agent exited",
+      body: `${terminal.title || terminal.id} exited with code ${exitCode}.`,
       tag: `athena-${terminal.id}`,
-      url: notificationUrl(terminal),
+      url: "/",
     });
   }
 
@@ -183,11 +208,14 @@ export function createPushNotifier() {
     start() {
       stopped = false;
       poll();
+      tickTimer ??= setInterval(tick, ATTENTION_TICK_MS);
     },
     stop() {
       stopped = true;
       if (pollTimer) clearTimeout(pollTimer);
-      for (const id of [...watched.keys()]) closeStream(id);
+      if (tickTimer) clearInterval(tickTimer);
+      tickTimer = null;
+      closeAll();
     },
   };
 }
@@ -269,20 +297,23 @@ function decodeBase64(value) {
   }
 }
 
-function firstLine(text) {
-  const clean = text.replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, " ").trim();
-  const line = clean.split("\n").map((l) => l.trim()).filter(Boolean).pop() || "Update available.";
-  return line.length > 120 ? `${line.slice(0, 117)}...` : line;
+// The exit event carries base64 JSON: {"exitCode": number | null, ...}.
+function parseExitCode(payloadBase64) {
+  try {
+    const exitCode = JSON.parse(decodeBase64(payloadBase64))?.exitCode;
+    return typeof exitCode === "number" ? exitCode : null;
+  } catch {
+    return null;
+  }
 }
 
-function notificationFingerprint(kind, body) {
-  return `${kind}:${body.toLowerCase().replace(/\s+/g, " ").slice(0, 160)}`;
-}
-
-function notificationUrl(terminal) {
+// `view` picks the agent view the tap opens: the terminal for approval
+// prompts (they only render there), the conversation for finished turns.
+function notificationUrl(terminal, view) {
   const params = new URLSearchParams();
   params.set("terminal", terminal.id);
   if (terminal.workspace) params.set("workspace", terminal.workspace);
+  params.set("view", view);
   return `/?${params.toString()}`;
 }
 

@@ -7,7 +7,7 @@ laptop and opened from the phone over Tailscale, that lets you:
 - watch and type into Athena's live agent terminals (xterm.js over the control server's SSE stream)
 - launch Codex, Claude, OpenCode, Athena Code, Grok, Hermes, or shell terminals in a workspace
 - browse native session history, read transcripts, and resume a session in a new terminal
-- get Web Push notifications when an agent appears to need input or finishes
+- get Web Push notifications when an agent is waiting on an answer, finishes a long turn, or crashes
 
 It talks to Athena only through Athena's existing HTTP APIs: the FastAPI backend
 and the Electron control server, both localhost-only. It has no shared code with
@@ -75,6 +75,22 @@ In live mode, blank URLs use the same-origin Vite proxy. The proxy reads Athena'
 ```
 
 This lets a phone reach the mobile app over Tailscale while the app server talks to Athena's localhost-only backend/control services.
+
+## Notifications
+
+The server watches every live terminal's output and alerts on timing, since an
+agent's TUI writes output constantly while it works and goes silent when it
+waits on you (`server/attention.mjs`):
+
+- **Agent waiting**: quiet for 20 s with an approval dialog or picker on screen.
+  Tapping it opens the Terminal view, where those prompts render.
+- **Agent finished**: quiet for 60 s after at least 30 s of work. Tapping it
+  opens the conversation. Repeat alerts for one terminal are held back for
+  10 minutes, then sent if the agent is still waiting.
+- **Agent exited**: the process exited with a non-zero code.
+
+Answering within those windows (for example at the desk) sends no alert. Run
+the timing tests with `npm test`.
 
 ## First release package
 
