@@ -65,6 +65,9 @@ export type AgentSession = {
   metadata: Record<string, string>;
 };
 
+/** Names a native session transcript: a history entry, or a live terminal's provider session. */
+export type TranscriptRef = { provider: AgentSessionProvider; id: string };
+
 export type WorkspaceSummary = {
   path: string;
   name: string;

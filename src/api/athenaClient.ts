@@ -7,6 +7,7 @@ import type {
   SnapshotErrors,
   SpawnTerminalRequest,
   TerminalBuffer,
+  TranscriptRef,
   WorkspaceSummary,
 } from "../types";
 import type { AppConfig } from "../config";
@@ -31,8 +32,11 @@ export type AthenaClient = {
    * any other live terminal (streamable, writable, killable).
    */
   resumeSession(session: AgentSession): Promise<EmbeddedTerminalSession[]>;
-  /** Tail of a native session's on-disk transcript, as plain text. */
-  sessionTranscript(session: AgentSession, maxBytes?: number): Promise<string>;
+  /**
+   * Tail of a native session's on-disk transcript, as markdown. Takes a history
+   * entry, or a live terminal's kind and providerSessionId.
+   */
+  sessionTranscript(ref: TranscriptRef, maxBytes?: number): Promise<string>;
   /**
    * Same-origin URL of the live SSE output stream for a terminal, or null when
    * streaming is unavailable (demo mode or no control URL configured). Consumed
@@ -155,8 +159,8 @@ class HttpAthenaClient implements AthenaClient {
     });
   }
 
-  async sessionTranscript(session: AgentSession, maxBytes = 65_536): Promise<string> {
-    const path = `/agents/sessions/${encodeURIComponent(session.provider)}/${encodeURIComponent(session.id)}/transcript?max_bytes=${maxBytes}&tail=true`;
+  async sessionTranscript(ref: TranscriptRef, maxBytes = 65_536): Promise<string> {
+    const path = `/agents/sessions/${encodeURIComponent(ref.provider)}/${encodeURIComponent(ref.id)}/transcript?max_bytes=${maxBytes}&tail=true`;
     return this.requestText(this.config.backendUrl, path);
   }
 
@@ -305,13 +309,18 @@ class DemoAthenaClient implements AthenaClient {
     });
   }
 
-  async sessionTranscript(session: AgentSession): Promise<string> {
+  async sessionTranscript(ref: TranscriptRef): Promise<string> {
     return [
-      `# ${session.title}`,
-      `provider: ${session.provider}`,
-      `workspace: ${session.workspace}`,
-      `updated: ${session.updated_at}`,
-      `resume: ${session.resume_command ?? "n/a"}`,
+      "# Demo Session Transcript",
+      "",
+      `- session: ${ref.id}`,
+      `- provider: ${ref.provider}`,
+      "",
+      "## User",
+      "",
+      "Review mobile gateway boundaries and prepare auth plan.",
+      "",
+      "## Assistant",
       "",
       "Demo transcript. Configure live mode to read the real on-disk session transcript.",
     ].join("\n");
@@ -355,7 +364,7 @@ const demoTerminals: EmbeddedTerminalSession[] = [
     promptPath: null,
     initialTask: "Review mobile gateway boundaries and prepare auth plan.",
     sessionLabel: "Live",
-    providerSessionId: null,
+    providerSessionId: "demo-codex-session",
     createdAt: new Date(Date.now() - 18 * 60_000).toISOString(),
     status: "running",
     exitCode: null,

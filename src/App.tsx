@@ -10,6 +10,7 @@ import {
   FileText,
   History,
   Layers,
+  MessageSquareText,
   Play,
   Plus,
   RefreshCw,
@@ -20,10 +21,22 @@ import {
 import { createAthenaClient, summarizeWorkspaces } from "./api/athenaClient";
 import { readConfig } from "./config";
 import { enablePush, pushState, sendTestPush, type PushState } from "./push/notifications";
+import { ConversationView } from "./components/ConversationView";
 import { MobileTerminal } from "./components/MobileTerminal";
-import type { AgentSession, EmbeddedTerminalKind, EmbeddedTerminalSession, MobileSnapshot, SnapshotErrors } from "./types";
+import type { AthenaClient } from "./api/athenaClient";
+import type {
+  AgentSession,
+  EmbeddedTerminalKind,
+  EmbeddedTerminalSession,
+  MobileSnapshot,
+  SnapshotErrors,
+  TranscriptRef,
+} from "./types";
 
 type Tab = "agents" | "launch" | "history" | "workspaces";
+
+/** How the selected agent is shown: its conversation, or the live terminal. */
+type AgentView = "chat" | "terminal";
 
 type TranscriptView = {
   session: AgentSession;
@@ -34,6 +47,8 @@ type TranscriptView = {
 type NotificationTarget = {
   terminalId: string;
   workspace: string | null;
+  /** Absent on targets persisted by older builds. */
+  view?: AgentView | null;
 };
 
 const LAUNCH_KINDS: EmbeddedTerminalKind[] = ["codex", "claude", "opencode", "athena", "grok", "hermes", "shell"];
@@ -48,6 +63,7 @@ export function App() {
   // known content already on screen, then revalidates — instead of a blank UI that
   // blocks on the first network round-trip.
   const [tab, setTab] = useState<Tab>(() => loadPersisted<Tab>(STORAGE_KEYS.tab, "agents"));
+  const [agentView, setAgentView] = useState<AgentView>(() => loadPersisted<AgentView>(STORAGE_KEYS.agentView, "chat"));
   const [snapshot, setSnapshot] = useState<MobileSnapshot | null>(() =>
     loadPersisted<MobileSnapshot | null>(STORAGE_KEYS.snapshot, null),
   );
@@ -124,6 +140,7 @@ export function App() {
     }
     setPendingNotificationTarget(target);
     setSelectedTerminalId(target.terminalId);
+    if (target.view) setAgentView(target.view);
     setTab("agents");
     void refresh();
   }
@@ -160,6 +177,7 @@ export function App() {
 
   // Mirror the cross-reload state back to storage as it changes.
   useEffect(() => persist(STORAGE_KEYS.tab, tab), [tab]);
+  useEffect(() => persist(STORAGE_KEYS.agentView, agentView), [agentView]);
   useEffect(() => persist(STORAGE_KEYS.snapshot, snapshot), [snapshot]);
   useEffect(() => persist(STORAGE_KEYS.selectedTerminalId, selectedTerminalId), [selectedTerminalId]);
   useEffect(() => persist(STORAGE_KEYS.pendingNotificationTarget, pendingNotificationTarget), [pendingNotificationTarget]);
@@ -207,6 +225,18 @@ export function App() {
       await client.sendTerminalRaw(selectedTerminal.id, data);
     } catch (sendError) {
       setError(messageOf(sendError));
+    }
+  }
+
+  // Whole messages from the conversation composer. The control server pastes
+  // the text and presses Enter the way each agent's TUI expects.
+  async function sendMessage(text: string) {
+    if (!selectedTerminal) return;
+    try {
+      await client.sendTerminalInput(selectedTerminal.id, text);
+    } catch (sendError) {
+      setError(messageOf(sendError));
+      throw sendError;
     }
   }
 
@@ -306,12 +336,16 @@ export function App() {
       <main className="content">
         {tab === "agents" && (
           <AgentsView
+            client={client}
             terminals={terminals}
             selected={selectedTerminal}
             streamUrl={selectedTerminal ? client.terminalStreamUrl(selectedTerminal.id) : null}
+            view={agentView}
             busy={busy}
             onSelect={setSelectedTerminalId}
+            onViewChange={setAgentView}
             onRaw={sendRaw}
+            onSend={sendMessage}
             onStop={killTerminal}
             onGoLaunch={() => setTab("launch")}
           />
@@ -356,21 +390,29 @@ export function App() {
 }
 
 function AgentsView({
+  client,
   terminals,
   selected,
   streamUrl,
+  view,
   busy,
   onSelect,
+  onViewChange,
   onRaw,
+  onSend,
   onStop,
   onGoLaunch,
 }: {
+  client: AthenaClient;
   terminals: EmbeddedTerminalSession[];
   selected: EmbeddedTerminalSession | null;
   streamUrl: string | null;
+  view: AgentView;
   busy: boolean;
   onSelect: (id: string) => void;
+  onViewChange: (view: AgentView) => void;
   onRaw: (data: string) => void;
+  onSend: (text: string) => Promise<void>;
   onStop: (terminal: EmbeddedTerminalSession) => void;
   onGoLaunch: () => void;
 }) {
@@ -391,6 +433,8 @@ function AgentsView({
   // The dropdown follows the selected terminal's workspace; switching it jumps
   // to that workspace's first terminal so the view below always stays in sync.
   const activeGroup = groups.find((group) => group.path === selected?.workspace) ?? groups[0];
+  const transcript = selected ? transcriptRefFor(selected) : null;
+  const showChat = view === "chat" && transcript !== null;
   const changeWorkspace = (path: string) => {
     const next = groups.find((group) => group.path === path);
     if (next?.terminals[0]) onSelect(next.terminals[0].id);
@@ -437,22 +481,57 @@ function AgentsView({
       {selected && (
         <div className="terminalCard">
           <div className="terminalCardHead">
-            <div>
+            <div className="terminalCardTitle">
               <strong>{selected.title}</strong>
               <small>{selected.kind} · pid {selected.pid ?? "n/a"} · {selected.status}</small>
             </div>
-            <button className="dangerButton" type="button" onClick={() => onStop(selected)} disabled={busy}>
-              <CircleStop size={16} /> Stop
-            </button>
+            <div className="terminalCardActions">
+              {transcript && (
+                <div className="viewToggle" role="group" aria-label="Agent view">
+                  <button
+                    type="button"
+                    className={showChat ? "active" : undefined}
+                    onClick={() => onViewChange("chat")}
+                    aria-label="Conversation"
+                    aria-pressed={showChat}
+                  >
+                    <MessageSquareText size={15} />
+                  </button>
+                  <button
+                    type="button"
+                    className={showChat ? undefined : "active"}
+                    onClick={() => onViewChange("terminal")}
+                    aria-label="Terminal"
+                    aria-pressed={!showChat}
+                  >
+                    <TerminalSquare size={15} />
+                  </button>
+                </div>
+              )}
+              <button className="dangerButton" type="button" onClick={() => onStop(selected)} disabled={busy}>
+                <CircleStop size={16} /> Stop
+              </button>
+            </div>
           </div>
 
-          <MobileTerminal key={selected.id} sessionId={selected.id} streamUrl={streamUrl} onInput={onRaw} />
+          {showChat && transcript ? (
+            <ConversationView key={selected.id} client={client} transcript={transcript} onSend={onSend} />
+          ) : (
+            <MobileTerminal key={selected.id} sessionId={selected.id} streamUrl={streamUrl} onInput={onRaw} />
+          )}
 
           <QuickKeys onRaw={onRaw} />
         </div>
       )}
     </section>
   );
+}
+
+// Agent terminals that Athena has linked to their native session can show the
+// conversation; shells and not-yet-linked panes only have the terminal.
+function transcriptRefFor(terminal: EmbeddedTerminalSession): TranscriptRef | null {
+  if (terminal.kind === "shell" || !terminal.providerSessionId) return null;
+  return { provider: terminal.kind, id: terminal.providerSessionId };
 }
 
 // Keys absent from mobile soft keyboards but essential for agent TUIs. Sequences
@@ -863,7 +942,8 @@ function parseNotificationTarget(rawUrl: string): NotificationTarget | null {
     const terminalId = params.get("terminal")?.trim();
     if (!terminalId) return null;
     const workspace = params.get("workspace")?.trim() || null;
-    return { terminalId, workspace };
+    const view = params.get("view");
+    return { terminalId, workspace, view: view === "chat" || view === "terminal" ? view : null };
   } catch {
     return null;
   }
@@ -873,6 +953,7 @@ function parseNotificationTarget(rawUrl: string): NotificationTarget | null {
 // backgrounded PWA, not just an in-tab reload.
 const STORAGE_KEYS = {
   tab: "athena.tab",
+  agentView: "athena.agentView",
   snapshot: "athena.snapshot",
   selectedTerminalId: "athena.selectedTerminalId",
   pendingNotificationTarget: "athena.pendingNotificationTarget",

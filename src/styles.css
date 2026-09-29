@@ -268,6 +268,30 @@ button:disabled { opacity: 0.42; cursor: not-allowed; }
 }
 .terminalCardHead strong { display: block; font-size: 13px; font-weight: 600; }
 .terminalCardHead small { display: block; color: var(--muted); font-size: 10px; text-transform: uppercase; letter-spacing: 0.03em; }
+.terminalCardTitle { min-width: 0; }
+.terminalCardTitle strong,
+.terminalCardTitle small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.terminalCardActions { flex: 0 0 auto; display: flex; align-items: center; gap: 8px; }
+
+/* Conversation / terminal switch for agents linked to a native session. */
+.viewToggle {
+  display: inline-flex;
+  padding: 2px;
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  background: var(--panel);
+}
+.viewToggle button {
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 26px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+}
+.viewToggle button.active { background: var(--panel-3); color: var(--text); }
 
 .dangerButton {
   display: inline-flex;
@@ -307,6 +331,80 @@ button:disabled { opacity: 0.42; cursor: not-allowed; }
 }
 .mobileTerminalState.live { color: var(--text); }
 .mobileTerminalState.error { color: var(--danger); }
+
+/* Conversation view: the agent's native transcript as chat, plus a composer. */
+.conversation { flex: 1; min-height: 0; display: flex; flex-direction: column; background: var(--panel); }
+.conversationList {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+}
+.conversationStatus { margin: auto; color: var(--muted); font-size: 13px; text-align: center; }
+.conversationStatus.error { margin: 0; color: var(--danger); font-size: 12px; }
+.chatMessage {
+  max-width: 92%;
+  padding: 9px 11px;
+  border-radius: 12px;
+  color: var(--text);
+  font-size: 13.5px;
+  line-height: 1.45;
+}
+.chatMessage.assistant { align-self: flex-start; border: 1px solid var(--line); background: var(--panel-2); }
+.chatMessage.user { align-self: flex-end; background: var(--panel-3); }
+.chatText { white-space: pre-wrap; overflow-wrap: anywhere; }
+.chatText.collapsed { display: -webkit-box; -webkit-line-clamp: 12; -webkit-box-orient: vertical; overflow: hidden; }
+.chatMore { margin-top: 6px; padding: 0; border: 0; background: none; color: var(--muted); font-size: 12px; font-weight: 500; }
+.chatTool {
+  align-self: flex-start;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+.composer {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+  padding: 8px;
+  border-top: 1px solid var(--line);
+  background: var(--panel-2);
+}
+.composer textarea {
+  flex: 1;
+  min-width: 0;
+  max-height: 120px;
+  padding: 9px 11px;
+  border: 1px solid var(--line-strong);
+  border-radius: 10px;
+  background: var(--panel);
+  color: var(--text);
+  /* 16px keeps iOS Safari from zooming the page when the field is focused. */
+  font-size: 16px;
+  line-height: 1.35;
+  resize: none;
+  outline: none;
+}
+.composer textarea:focus { border-color: var(--text-2); }
+.composerSend {
+  flex: 0 0 auto;
+  width: 40px;
+  height: 40px;
+  display: grid;
+  place-items: center;
+  border: 0;
+  border-radius: 10px;
+  background: var(--accent);
+  color: var(--accent-fg);
+}
+.composerSend:disabled { opacity: 0.35; }
 
 /* Keys missing from mobile soft keyboards; typed characters go through xterm. */
 .quickKeys {

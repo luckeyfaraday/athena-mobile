@@ -3,6 +3,7 @@
 Mobile companion for Athena (`context-workspace`). It is a PWA, served from the
 laptop and opened from the phone over Tailscale, that lets you:
 
+- read a live agent's conversation (its native session transcript) and reply from a chat composer
 - watch and type into Athena's live agent terminals (xterm.js over the control server's SSE stream)
 - launch Codex, Claude, OpenCode, Athena Code, Grok, Hermes, or shell terminals in a workspace
 - browse native session history, read transcripts, and resume a session in a new terminal
