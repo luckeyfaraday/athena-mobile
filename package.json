@@ -9,7 +9,8 @@
     "build": "tsc -b && vite build",
     "start": "node server/production.mjs",
     "start:tailscale": "ATHENA_HOST=tailscale node server/production.mjs",
-    "preview": "vite preview --host 127.0.0.1"
+    "preview": "vite preview --host 127.0.0.1",
+    "test": "node --test server/*.test.mjs"
   },
   "dependencies": {
     "@vitejs/plugin-react": "^5.0.0",

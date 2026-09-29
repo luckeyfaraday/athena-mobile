@@ -4,8 +4,10 @@ import type {
   HermesStatus,
   MobileSnapshot,
   ServiceState,
+  SnapshotErrors,
   SpawnTerminalRequest,
   TerminalBuffer,
+  TranscriptRef,
   WorkspaceSummary,
 } from "../types";
 import type { AppConfig } from "../config";
@@ -30,8 +32,11 @@ export type AthenaClient = {
    * any other live terminal (streamable, writable, killable).
    */
   resumeSession(session: AgentSession): Promise<EmbeddedTerminalSession[]>;
-  /** Tail of a native session's on-disk transcript, as plain text. */
-  sessionTranscript(session: AgentSession, maxBytes?: number): Promise<string>;
+  /**
+   * Tail of a native session's on-disk transcript, as markdown. Takes a history
+   * entry, or a live terminal's kind and providerSessionId.
+   */
+  sessionTranscript(ref: TranscriptRef, maxBytes?: number): Promise<string>;
   /**
    * Same-origin URL of the live SSE output stream for a terminal, or null when
    * streaming is unavailable (demo mode or no control URL configured). Consumed
@@ -52,13 +57,33 @@ class HttpAthenaClient implements AthenaClient {
 
   async snapshot(projectDir?: string): Promise<MobileSnapshot> {
     // Each section degrades independently: a down control server must not blank
-    // out backend status (and vice versa). Health is probed separately.
+    // out backend status (and vice versa). Health is probed separately, and it
+    // is unauthenticated, so a rejected token only shows up here — record each
+    // failure so the UI can tell "couldn't load" apart from "nothing there".
+    const errors: SnapshotErrors = {};
+    const settle = <T>(section: keyof SnapshotErrors, request: Promise<T>, fallback: T): Promise<T> =>
+      request.catch((error: unknown) => {
+        errors[section] = error instanceof Error ? error.message : String(error);
+        return fallback;
+      });
     const [service, hermes, terminals, recentSessions] = await Promise.all([
       this.refreshService(),
-      this.backendJson<{ hermes: HermesStatus }>("/hermes/status").then((payload) => payload.hermes).catch(() => null),
-      this.controlJson<{ terminals: EmbeddedTerminalSession[] }>("/terminals").then((payload) => payload.terminals).catch(() => []),
+      settle<HermesStatus | null>(
+        "hermes",
+        this.backendJson<{ hermes: HermesStatus }>("/hermes/status").then((payload) => payload.hermes),
+        null,
+      ),
+      settle(
+        "terminals",
+        this.controlJson<{ terminals: EmbeddedTerminalSession[] }>("/terminals").then((payload) => payload.terminals),
+        [],
+      ),
       projectDir
-        ? this.backendJson<{ sessions: AgentSession[] }>(`/agents/sessions?project_dir=${encodeURIComponent(projectDir)}&limit=25`).then((payload) => payload.sessions).catch(() => [])
+        ? settle(
+            "sessions",
+            this.backendJson<{ sessions: AgentSession[] }>(`/agents/sessions?project_dir=${encodeURIComponent(projectDir)}&limit=25`).then((payload) => payload.sessions),
+            [],
+          )
         : Promise.resolve([]),
     ]);
     return {
@@ -67,6 +92,7 @@ class HttpAthenaClient implements AthenaClient {
       terminals,
       recentSessions,
       workspaces: summarizeWorkspaces(terminals, recentSessions),
+      errors,
     };
   }
 
@@ -133,8 +159,8 @@ class HttpAthenaClient implements AthenaClient {
     });
   }
 
-  async sessionTranscript(session: AgentSession, maxBytes = 65_536): Promise<string> {
-    const path = `/agents/sessions/${encodeURIComponent(session.provider)}/${encodeURIComponent(session.id)}/transcript?max_bytes=${maxBytes}&tail=true`;
+  async sessionTranscript(ref: TranscriptRef, maxBytes = 65_536): Promise<string> {
+    const path = `/agents/sessions/${encodeURIComponent(ref.provider)}/${encodeURIComponent(ref.id)}/transcript?max_bytes=${maxBytes}&tail=true`;
     return this.requestText(this.config.backendUrl, path);
   }
 
@@ -283,13 +309,18 @@ class DemoAthenaClient implements AthenaClient {
     });
   }
 
-  async sessionTranscript(session: AgentSession): Promise<string> {
+  async sessionTranscript(ref: TranscriptRef): Promise<string> {
     return [
-      `# ${session.title}`,
-      `provider: ${session.provider}`,
-      `workspace: ${session.workspace}`,
-      `updated: ${session.updatedAt}`,
-      `resume: ${session.resumeCommand ?? "n/a"}`,
+      "# Demo Session Transcript",
+      "",
+      `- session: ${ref.id}`,
+      `- provider: ${ref.provider}`,
+      "",
+      "## User",
+      "",
+      "Review mobile gateway boundaries and prepare auth plan.",
+      "",
+      "## Assistant",
       "",
       "Demo transcript. Configure live mode to read the real on-disk session transcript.",
     ].join("\n");
@@ -300,7 +331,7 @@ class DemoAthenaClient implements AthenaClient {
   }
 }
 
-function summarizeWorkspaces(terminals: EmbeddedTerminalSession[], sessions: AgentSession[]): WorkspaceSummary[] {
+export function summarizeWorkspaces(terminals: EmbeddedTerminalSession[], sessions: AgentSession[]): WorkspaceSummary[] {
   const paths = new Set([...terminals.map((entry) => entry.workspace), ...sessions.map((entry) => entry.workspace)]);
   return Array.from(paths).map((path) => ({
     path,
@@ -333,7 +364,7 @@ const demoTerminals: EmbeddedTerminalSession[] = [
     promptPath: null,
     initialTask: "Review mobile gateway boundaries and prepare auth plan.",
     sessionLabel: "Live",
-    providerSessionId: null,
+    providerSessionId: "demo-codex-session",
     createdAt: new Date(Date.now() - 18 * 60_000).toISOString(),
     status: "running",
     exitCode: null,
@@ -365,12 +396,12 @@ const demoSessions: AgentSession[] = [
     branch: "main",
     model: "gpt-5",
     agent: "codex",
-    createdAt: new Date(Date.now() - 6 * 60 * 60_000).toISOString(),
-    updatedAt: new Date(Date.now() - 5 * 60 * 60_000).toISOString(),
+    created_at: new Date(Date.now() - 6 * 60 * 60_000).toISOString(),
+    updated_at: new Date(Date.now() - 5 * 60 * 60_000).toISOString(),
     status: "historical",
-    terminalId: null,
+    terminal_id: null,
     pid: null,
-    resumeCommand: null,
+    resume_command: null,
     metadata: {},
   },
 ];

@@ -10,6 +10,7 @@ import {
   FileText,
   History,
   Layers,
+  MessageSquareText,
   Play,
   Plus,
   RefreshCw,
@@ -17,13 +18,25 @@ import {
   TerminalSquare,
   X,
 } from "lucide-react";
-import { createAthenaClient } from "./api/athenaClient";
+import { createAthenaClient, summarizeWorkspaces } from "./api/athenaClient";
 import { readConfig } from "./config";
 import { enablePush, pushState, sendTestPush, type PushState } from "./push/notifications";
+import { ConversationView } from "./components/ConversationView";
 import { MobileTerminal } from "./components/MobileTerminal";
-import type { AgentSession, EmbeddedTerminalKind, EmbeddedTerminalSession, MobileSnapshot } from "./types";
+import type { AthenaClient } from "./api/athenaClient";
+import type {
+  AgentSession,
+  EmbeddedTerminalKind,
+  EmbeddedTerminalSession,
+  MobileSnapshot,
+  SnapshotErrors,
+  TranscriptRef,
+} from "./types";
 
 type Tab = "agents" | "launch" | "history" | "workspaces";
+
+/** How the selected agent is shown: its conversation, or the live terminal. */
+type AgentView = "chat" | "terminal";
 
 type TranscriptView = {
   session: AgentSession;
@@ -34,9 +47,11 @@ type TranscriptView = {
 type NotificationTarget = {
   terminalId: string;
   workspace: string | null;
+  /** Absent on targets persisted by older builds. */
+  view?: AgentView | null;
 };
 
-const LAUNCH_KINDS: EmbeddedTerminalKind[] = ["codex", "claude", "opencode", "hermes", "shell"];
+const LAUNCH_KINDS: EmbeddedTerminalKind[] = ["codex", "claude", "opencode", "athena", "grok", "hermes", "shell"];
 const SNAPSHOT_REFRESH_MS = 5000;
 
 export function App() {
@@ -48,6 +63,7 @@ export function App() {
   // known content already on screen, then revalidates — instead of a blank UI that
   // blocks on the first network round-trip.
   const [tab, setTab] = useState<Tab>(() => loadPersisted<Tab>(STORAGE_KEYS.tab, "agents"));
+  const [agentView, setAgentView] = useState<AgentView>(() => loadPersisted<AgentView>(STORAGE_KEYS.agentView, "chat"));
   const [snapshot, setSnapshot] = useState<MobileSnapshot | null>(() =>
     loadPersisted<MobileSnapshot | null>(STORAGE_KEYS.snapshot, null),
   );
@@ -104,7 +120,7 @@ export function App() {
     setError(null);
     try {
       const next = await client.snapshot(primaryWorkspaceRef.current || undefined);
-      setSnapshot(next);
+      setSnapshot((previous) => keepLastLoaded(previous, next));
       setSelectedTerminalId((current) => current ?? next.terminals[0]?.id ?? null);
     } catch (refreshError) {
       setError(messageOf(refreshError));
@@ -124,6 +140,7 @@ export function App() {
     }
     setPendingNotificationTarget(target);
     setSelectedTerminalId(target.terminalId);
+    if (target.view) setAgentView(target.view);
     setTab("agents");
     void refresh();
   }
@@ -160,6 +177,7 @@ export function App() {
 
   // Mirror the cross-reload state back to storage as it changes.
   useEffect(() => persist(STORAGE_KEYS.tab, tab), [tab]);
+  useEffect(() => persist(STORAGE_KEYS.agentView, agentView), [agentView]);
   useEffect(() => persist(STORAGE_KEYS.snapshot, snapshot), [snapshot]);
   useEffect(() => persist(STORAGE_KEYS.selectedTerminalId, selectedTerminalId), [selectedTerminalId]);
   useEffect(() => persist(STORAGE_KEYS.pendingNotificationTarget, pendingNotificationTarget), [pendingNotificationTarget]);
@@ -207,6 +225,18 @@ export function App() {
       await client.sendTerminalRaw(selectedTerminal.id, data);
     } catch (sendError) {
       setError(messageOf(sendError));
+    }
+  }
+
+  // Whole messages from the conversation composer. The control server pastes
+  // the text and presses Enter the way each agent's TUI expects.
+  async function sendMessage(text: string) {
+    if (!selectedTerminal) return;
+    try {
+      await client.sendTerminalInput(selectedTerminal.id, text);
+    } catch (sendError) {
+      setError(messageOf(sendError));
+      throw sendError;
     }
   }
 
@@ -279,6 +309,7 @@ export function App() {
 
   const backendHealthy = Boolean(snapshot?.service.backend.healthy);
   const controlHealthy = Boolean(snapshot?.service.control.healthy);
+  const banner = error ?? loadErrorMessage(snapshot);
 
   return (
     <div className="appShell">
@@ -300,17 +331,21 @@ export function App() {
         </div>
       </header>
 
-      {error && <div className="errorBanner">{error}</div>}
+      {banner && <div className="errorBanner">{banner}</div>}
 
       <main className="content">
         {tab === "agents" && (
           <AgentsView
+            client={client}
             terminals={terminals}
             selected={selectedTerminal}
             streamUrl={selectedTerminal ? client.terminalStreamUrl(selectedTerminal.id) : null}
+            view={agentView}
             busy={busy}
             onSelect={setSelectedTerminalId}
+            onViewChange={setAgentView}
             onRaw={sendRaw}
+            onSend={sendMessage}
             onStop={killTerminal}
             onGoLaunch={() => setTab("launch")}
           />
@@ -355,21 +390,29 @@ export function App() {
 }
 
 function AgentsView({
+  client,
   terminals,
   selected,
   streamUrl,
+  view,
   busy,
   onSelect,
+  onViewChange,
   onRaw,
+  onSend,
   onStop,
   onGoLaunch,
 }: {
+  client: AthenaClient;
   terminals: EmbeddedTerminalSession[];
   selected: EmbeddedTerminalSession | null;
   streamUrl: string | null;
+  view: AgentView;
   busy: boolean;
   onSelect: (id: string) => void;
+  onViewChange: (view: AgentView) => void;
   onRaw: (data: string) => void;
+  onSend: (text: string) => Promise<void>;
   onStop: (terminal: EmbeddedTerminalSession) => void;
   onGoLaunch: () => void;
 }) {
@@ -390,6 +433,8 @@ function AgentsView({
   // The dropdown follows the selected terminal's workspace; switching it jumps
   // to that workspace's first terminal so the view below always stays in sync.
   const activeGroup = groups.find((group) => group.path === selected?.workspace) ?? groups[0];
+  const transcript = selected ? transcriptRefFor(selected) : null;
+  const showChat = view === "chat" && transcript !== null;
   const changeWorkspace = (path: string) => {
     const next = groups.find((group) => group.path === path);
     if (next?.terminals[0]) onSelect(next.terminals[0].id);
@@ -436,22 +481,57 @@ function AgentsView({
       {selected && (
         <div className="terminalCard">
           <div className="terminalCardHead">
-            <div>
+            <div className="terminalCardTitle">
               <strong>{selected.title}</strong>
               <small>{selected.kind} · pid {selected.pid ?? "n/a"} · {selected.status}</small>
             </div>
-            <button className="dangerButton" type="button" onClick={() => onStop(selected)} disabled={busy}>
-              <CircleStop size={16} /> Stop
-            </button>
+            <div className="terminalCardActions">
+              {transcript && (
+                <div className="viewToggle" role="group" aria-label="Agent view">
+                  <button
+                    type="button"
+                    className={showChat ? "active" : undefined}
+                    onClick={() => onViewChange("chat")}
+                    aria-label="Conversation"
+                    aria-pressed={showChat}
+                  >
+                    <MessageSquareText size={15} />
+                  </button>
+                  <button
+                    type="button"
+                    className={showChat ? undefined : "active"}
+                    onClick={() => onViewChange("terminal")}
+                    aria-label="Terminal"
+                    aria-pressed={!showChat}
+                  >
+                    <TerminalSquare size={15} />
+                  </button>
+                </div>
+              )}
+              <button className="dangerButton" type="button" onClick={() => onStop(selected)} disabled={busy}>
+                <CircleStop size={16} /> Stop
+              </button>
+            </div>
           </div>
 
-          <MobileTerminal key={selected.id} sessionId={selected.id} streamUrl={streamUrl} onInput={onRaw} />
+          {showChat && transcript ? (
+            <ConversationView key={selected.id} client={client} transcript={transcript} onSend={onSend} />
+          ) : (
+            <MobileTerminal key={selected.id} sessionId={selected.id} streamUrl={streamUrl} onInput={onRaw} />
+          )}
 
           <QuickKeys onRaw={onRaw} />
         </div>
       )}
     </section>
   );
+}
+
+// Agent terminals that Athena has linked to their native session can show the
+// conversation; shells and not-yet-linked panes only have the terminal.
+function transcriptRefFor(terminal: EmbeddedTerminalSession): TranscriptRef | null {
+  if (terminal.kind === "shell" || !terminal.providerSessionId) return null;
+  return { provider: terminal.kind, id: terminal.providerSessionId };
 }
 
 // Keys absent from mobile soft keyboards but essential for agent TUIs. Sequences
@@ -612,7 +692,7 @@ function HistoryView({
       <div className="emptyState">
         <History size={28} />
         <strong>No recent sessions</strong>
-        <span>Native Codex, Claude, OpenCode, and Hermes sessions for this workspace appear here.</span>
+        <span>Native Codex, Claude, OpenCode, Athena Code, Grok, and Hermes sessions for this workspace appear here.</span>
       </div>
     );
   }
@@ -631,7 +711,7 @@ function HistoryView({
               <span className={`providerDot ${session.provider}`} />
               <div className="historyText">
                 <strong>{session.title}</strong>
-                <small>{labelForKind(session.provider)} · {formatRelativeTime(session.updatedAt)} · {session.status}</small>
+                <small>{labelForKind(session.provider)} · {formatRelativeTime(session.updated_at)} · {session.status}</small>
               </div>
             </div>
             <div className="historyActions">
@@ -788,8 +868,11 @@ function Metric({ label, value, detail }: { label: string; value: string; detail
   );
 }
 
+// Names the desktop app uses where plain capitalization would be wrong.
+const KIND_LABELS: Record<string, string> = { athena: "Athena Code", opencode: "OpenCode" };
+
 function labelForKind(kind: string): string {
-  return kind.charAt(0).toUpperCase() + kind.slice(1);
+  return KIND_LABELS[kind] ?? kind.charAt(0).toUpperCase() + kind.slice(1);
 }
 
 function workspaceName(path: string): string {
@@ -827,13 +910,40 @@ function messageOf(value: unknown): string {
   return value instanceof Error ? value.message : String(value);
 }
 
+// A section that failed to refresh keeps its last loaded contents instead of
+// collapsing to an empty list, so a network blip on the phone doesn't read as
+// "no agents" or tear down the open terminal. The failure still shows in the
+// banner via loadErrorMessage.
+function keepLastLoaded(previous: MobileSnapshot | null, next: MobileSnapshot): MobileSnapshot {
+  if (!previous || !next.errors) return next;
+  const terminals = next.errors.terminals ? previous.terminals : next.terminals;
+  const recentSessions = next.errors.sessions ? previous.recentSessions : next.recentSessions;
+  const hermes = next.errors.hermes ? previous.hermes : next.hermes;
+  return { ...next, terminals, recentSessions, hermes, workspaces: summarizeWorkspaces(terminals, recentSessions) };
+}
+
+const SECTION_LABELS: Record<keyof SnapshotErrors, string> = {
+  terminals: "live agents",
+  sessions: "session history",
+  hermes: "Hermes status",
+};
+
+function loadErrorMessage(snapshot: MobileSnapshot | null): string | null {
+  const errors = snapshot?.errors ?? {};
+  const failures = (Object.keys(SECTION_LABELS) as (keyof SnapshotErrors)[])
+    .filter((section) => errors[section])
+    .map((section) => `${SECTION_LABELS[section]} (${errors[section]})`);
+  return failures.length ? `Couldn't refresh ${failures.join(", ")}.` : null;
+}
+
 function parseNotificationTarget(rawUrl: string): NotificationTarget | null {
   try {
     const params = new URL(rawUrl, window.location.origin).searchParams;
     const terminalId = params.get("terminal")?.trim();
     if (!terminalId) return null;
     const workspace = params.get("workspace")?.trim() || null;
-    return { terminalId, workspace };
+    const view = params.get("view");
+    return { terminalId, workspace, view: view === "chat" || view === "terminal" ? view : null };
   } catch {
     return null;
   }
@@ -843,6 +953,7 @@ function parseNotificationTarget(rawUrl: string): NotificationTarget | null {
 // backgrounded PWA, not just an in-tab reload.
 const STORAGE_KEYS = {
   tab: "athena.tab",
+  agentView: "athena.agentView",
   snapshot: "athena.snapshot",
   selectedTerminalId: "athena.selectedTerminalId",
   pendingNotificationTarget: "athena.pendingNotificationTarget",
