@@ -103,3 +103,51 @@ export type SpawnTerminalRequest = {
   /** Human label shown on the resumed terminal (typically the original session title). */
   session_label?: string;
 };
+
+// Subscription quota records from the backend's /usage/accounts. The laptop
+// owns provider logins; these carry display fields only, never credentials.
+export type UsageStatus =
+  | "ok"
+  | "loading"
+  | "stale"
+  | "expired"
+  | "signed_out"
+  | "rate_limited"
+  | "error"
+  | "unsupported";
+
+export type UsageWindow = {
+  id: string;
+  label: string;
+  used_percent: number;
+  resets_at: string | null;
+  window_minutes: number | null;
+};
+
+export type UsageAccount = {
+  key: string;
+  provider: string;
+  provider_name: string;
+  account: {
+    email: string | null;
+    display_name: string | null;
+    organization: string | null;
+    identified: boolean;
+  };
+  profiles: { label: string; path: string }[];
+  plan: string | null;
+  status: UsageStatus;
+  message: string | null;
+  windows: UsageWindow[];
+  stale: boolean;
+  refreshing: boolean;
+  fetched_at: string | null;
+  checked_at: string | null;
+  next_refresh_at: string | null;
+};
+
+export type UsageSnapshot = {
+  accounts: UsageAccount[];
+  generated_at: string;
+  refresh_interval_seconds: number;
+};

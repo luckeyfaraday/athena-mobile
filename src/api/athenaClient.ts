@@ -8,6 +8,8 @@ import type {
   SpawnTerminalRequest,
   TerminalBuffer,
   TranscriptRef,
+  UsageAccount,
+  UsageSnapshot,
   WorkspaceSummary,
 } from "../types";
 import type { AppConfig } from "../config";
@@ -53,6 +55,13 @@ export type AthenaClient = {
    * by the xterm view via EventSource; the dev proxy injects the control token.
    */
   terminalStreamUrl(target: string, maxChars?: number): string | null;
+  /**
+   * Subscription quota records (Claude, Codex) from the laptop's shared cache.
+   * Never waits on a provider: the backend refreshes in the background.
+   */
+  usage(): Promise<UsageSnapshot>;
+  /** Re-read provider quotas now. The backend deduplicates and bounds the wait. */
+  refreshUsage(accountKey?: string): Promise<UsageSnapshot>;
 };
 
 const REQUEST_TIMEOUT_MS = 15_000;
@@ -191,6 +200,19 @@ class HttpAthenaClient implements AthenaClient {
     await this.controlJson("/workspaces/open", {
       method: "POST",
       body: JSON.stringify({ project_dir: path, select: false }),
+    });
+  }
+
+  async usage(): Promise<UsageSnapshot> {
+    return this.backendJson<UsageSnapshot>("/usage/accounts");
+  }
+
+  async refreshUsage(accountKey?: string): Promise<UsageSnapshot> {
+    return this.backendJson<UsageSnapshot>("/usage/refresh", {
+      method: "POST",
+      body: JSON.stringify({ account_key: accountKey ?? null }),
+      // The laptop waits up to 12 s for the probe itself, beyond the usual request budget.
+      signal: AbortSignal.timeout(25_000),
     });
   }
 
@@ -339,6 +361,14 @@ class DemoAthenaClient implements AthenaClient {
     });
   }
 
+  async usage(): Promise<UsageSnapshot> {
+    return demoUsage(Date.now());
+  }
+
+  async refreshUsage(): Promise<UsageSnapshot> {
+    return demoUsage(Date.now());
+  }
+
   async sessionTranscript(ref: TranscriptRef): Promise<string> {
     return [
       "# Demo Session Transcript",
@@ -455,3 +485,81 @@ const demoSessions: AgentSession[] = [
     metadata: {},
   },
 ];
+
+// One record per state the usage UI must render: live, last-known after an
+// expired sign-in, near a cap, and failing with nothing to show.
+function demoUsage(now: number): UsageSnapshot {
+  const at = (minutes: number) => new Date(now + minutes * 60_000).toISOString();
+  const record = (overrides: Partial<UsageAccount> & Pick<UsageAccount, "key" | "provider" | "provider_name">): UsageAccount => ({
+    account: { email: "ada@example.com", display_name: "Ada", organization: null, identified: true },
+    profiles: [{ label: "default", path: overrides.provider === "codex" ? "~/.codex" : "~/.claude" }],
+    plan: null,
+    status: "ok",
+    message: null,
+    windows: [],
+    stale: false,
+    refreshing: false,
+    fetched_at: at(-2),
+    checked_at: at(-2),
+    next_refresh_at: at(3),
+    ...overrides,
+  });
+  return {
+    generated_at: at(0),
+    refresh_interval_seconds: 300,
+    accounts: [
+      record({
+        key: "claude:demo0001",
+        provider: "claude",
+        provider_name: "Claude",
+        plan: "Max 5x",
+        account: { email: "ada@example.com", display_name: "Ada", organization: "Ada's Org", identified: true },
+        windows: [
+          { id: "session", label: "Session", used_percent: 27, resets_at: at(112), window_minutes: 300 },
+          { id: "weekly", label: "Weekly", used_percent: 64, resets_at: at(4 * 1440 + 300), window_minutes: 10080 },
+          { id: "weekly:fable", label: "Weekly · Fable", used_percent: 3, resets_at: at(4 * 1440 + 300), window_minutes: 10080 },
+        ],
+      }),
+      record({
+        key: "claude:demo0002",
+        provider: "claude",
+        provider_name: "Claude",
+        plan: "Pro",
+        profiles: [{ label: "work", path: "~/.claude-accounts/work" }],
+        status: "expired",
+        message: "The saved sign-in no longer works. Run Claude Code with CLAUDE_CONFIG_DIR=~/.claude-accounts/work to sign in.",
+        stale: true,
+        fetched_at: at(-95),
+        checked_at: at(-20),
+        next_refresh_at: null,
+        windows: [{ id: "weekly", label: "Weekly", used_percent: 41, resets_at: at(2 * 1440), window_minutes: 10080 }],
+      }),
+      record({
+        key: "codex:demo0003",
+        provider: "codex",
+        provider_name: "Codex",
+        plan: "Plus",
+        profiles: [
+          { label: "default", path: "~/.codex" },
+          { label: "account1", path: "~/.codex-accounts/account1" },
+        ],
+        windows: [
+          { id: "codex:300", label: "Session", used_percent: 86, resets_at: at(47), window_minutes: 300 },
+          { id: "codex:10080", label: "Weekly", used_percent: 39, resets_at: at(3 * 1440 + 90), window_minutes: 10080 },
+        ],
+      }),
+      record({
+        key: "codex:demo0004",
+        provider: "codex",
+        provider_name: "Codex",
+        plan: "Pro",
+        account: { email: "grace@example.com", display_name: "Grace", organization: null, identified: true },
+        profiles: [{ label: "account2", path: "~/.codex-accounts/account2" }],
+        status: "error",
+        message: "codex app-server did not answer account/rateLimits/read in time.",
+        fetched_at: null,
+        next_refresh_at: at(1),
+      }),
+    ],
+  };
+}

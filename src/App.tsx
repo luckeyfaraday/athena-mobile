@@ -23,6 +23,7 @@ import { readConfig } from "./config";
 import { enablePush, pushState, sendTestPush, type PushState } from "./push/notifications";
 import { ConversationView } from "./components/ConversationView";
 import { MobileTerminal } from "./components/MobileTerminal";
+import { UsageStrip } from "./components/UsageStrip";
 import type { AthenaClient } from "./api/athenaClient";
 import type {
   AgentSession,
@@ -375,6 +376,8 @@ export function App() {
           </button>
         </div>
       </header>
+
+      <UsageStrip client={client} />
 
       {banner && <div className="errorBanner">{banner}</div>}
 
