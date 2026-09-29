@@ -367,7 +367,11 @@ function UsageSheet({
               ))}
             </ul>
           ) : (
-            account.status === "loading" && <p className="usageEmptyNote">Reading quota windows…</p>
+            (account.status === "loading" || account.status === "ok") && (
+              <p className="usageEmptyNote">
+                {account.status === "loading" ? "Reading quota windows…" : "No quota window is open right now; the next check reads the new ones."}
+              </p>
+            )
           )}
 
           <div className="usageProfiles">
