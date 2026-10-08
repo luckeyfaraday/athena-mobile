@@ -8,10 +8,15 @@
 // only the live data/SSE has to revalidate.
 //
 // Navigations use the network first so an old shell cannot reference assets
-// removed by a deployment. Hashed assets stay cache-first for fast repeat loads.
-// The proxied Athena API and SSE stream always use the network.
+// removed by a deployment, but fall back to the cached shell after a few
+// seconds: an unreachable host usually hangs rather than refusing, and the app
+// must not sit on a blank screen waiting for it. Hashed assets (/assets/) never
+// change, so they are cache-first; other files (manifest, icons) are
+// network-first with the cache as the offline fallback. The proxied Athena API
+// and SSE stream always use the network.
 
 const CACHE = "athena-shell-v2";
+const NAVIGATION_TIMEOUT_MS = 3000;
 
 // When registered against the HTTPS dev server (so push can be tested), the
 // worker must not cache Vite's module graph — that would serve stale code across
@@ -51,9 +56,11 @@ self.addEventListener("fetch", (event) => {
   if (url.origin !== self.location.origin) return;
   if (PASS_THROUGH.some((prefix) => url.pathname.startsWith(prefix))) return;
 
-  const response = appResponse(request);
+  const { response, settled } = appResponse(request);
   event.respondWith(response);
-  event.waitUntil(response.then(() => undefined, () => undefined));
+  // Keeps the worker alive until the network answer is cached, even when the
+  // cached shell was served first.
+  event.waitUntil(settled);
 });
 
 // A push arrives even when the PWA is closed; show the agent-attention alert.
@@ -113,29 +120,36 @@ function validResponse(request, response) {
   return !type.includes("text/html");
 }
 
-async function appResponse(request) {
-  const cache = await caches.open(CACHE);
-  const cached = await cache.match(request);
+function appResponse(request) {
   const navigation = request.mode === "navigate";
-  if (!navigation && cached && validResponse(request, cached)) return cached;
+  const hashed = new URL(request.url).pathname.startsWith("/assets/");
+  let network = null;
+  const response = (async () => {
+    const cache = await caches.open(CACHE);
+    // Any navigation (a notification deep link included) can use the app shell.
+    const hit = (await cache.match(request)) ?? (navigation ? (await cache.match("/")) ?? (await cache.match("/index.html")) : undefined);
+    const cached = hit && validResponse(request, hit) ? hit : null;
+    if (hashed && cached) return cached;
 
-  try {
-    const response = await fetch(request, navigation ? { cache: "no-store" } : undefined);
-    if (validResponse(request, response)) {
+    network = fetch(request, navigation ? { cache: "no-store" } : undefined).then(async (fresh) => {
       // A full cache or private browsing must not discard a working response.
-      try { await cache.put(request, response.clone()); } catch { /* best effort */ }
-      return response;
+      if (validResponse(request, fresh)) {
+        try { await cache.put(request, fresh.clone()); } catch { /* best effort */ }
+      }
+      return fresh;
+    });
+
+    if (navigation && cached) {
+      const timedOut = new Promise((resolve) => setTimeout(() => resolve(null), NAVIGATION_TIMEOUT_MS));
+      const first = await Promise.race([network.catch(() => null), timedOut]);
+      return first && validResponse(request, first) ? first : cached;
     }
-    if (!navigation) return response;
-  } catch { /* offline: use the last known shell below */ }
-
-  if (cached && validResponse(request, cached)) return cached;
-
-  // Offline with nothing cached: for a navigation, serve the cached app shell so
-  // the SPA still boots and can show its own connection error.
-  if (navigation) {
-    const shell = await cache.match("/index.html") ?? (await cache.match("/"));
-    if (shell) return shell;
-  }
-  return Response.error();
+    try {
+      const fresh = await network;
+      if (!navigation || validResponse(request, fresh)) return fresh;
+    } catch { /* offline: use the cached copy below */ }
+    return cached ?? Response.error();
+  })();
+  const settled = response.then(() => network?.catch(() => undefined), () => undefined);
+  return { response, settled };
 }

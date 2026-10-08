@@ -7,7 +7,7 @@ const source = await fs.readFile(new URL("../public/sw.js", import.meta.url), "u
 const origin = "https://athena.test";
 const html = (text) => new Response(text, { headers: { "Content-Type": "text/html" } });
 
-function harness(fetch, dev = false) {
+function harness(fetch, dev = false, timerScale = 1) {
   const handlers = {};
   const stores = new Map();
   const caches = {
@@ -25,6 +25,7 @@ function harness(fetch, dev = false) {
   };
   vm.runInNewContext(source, {
     URL, Response, caches, fetch,
+    setTimeout: (callback, ms) => setTimeout(callback, ms * timerScale),
     self: {
       location: new URL(`/sw.js${dev ? "?dev=1" : ""}`, origin),
       addEventListener: (name, handler) => { handlers[name] = handler; },
@@ -101,4 +102,32 @@ test("API requests and dev modules remain network-only", async () => {
     assert.equal(await worker.request(path, "cors"), undefined);
   }
   assert.equal(await harness(() => {}, true).request("/src/main.tsx", "cors"), undefined);
+});
+
+test("a host that hangs can't keep the app off screen when a shell is cached", async () => {
+  let release;
+  const worker = harness(() => new Promise((resolve) => { release = () => resolve(html("late build")); }), false, 0.001);
+  const cache = await worker.caches.open("athena-shell-v2");
+  await cache.put("/", html("cached shell"));
+  const pending = worker.request("/?terminal=t1");
+  // The cached shell is served while the network is still hanging…
+  setTimeout(() => release(), 50);
+  assert.equal(await (await pending).text(), "cached shell");
+  // …and the late answer still refreshes the cache.
+  assert.equal(await (await cache.match("/?terminal=t1")).text(), "late build");
+});
+
+test("files outside /assets/ are refreshed from the network, not pinned in the cache", async () => {
+  const worker = harness(async () => new Response("{\"name\":\"new\"}", { headers: { "Content-Type": "application/manifest+json" } }));
+  const cache = await worker.caches.open("athena-shell-v2");
+  await cache.put("/manifest.webmanifest", new Response("{\"name\":\"old\"}", { headers: { "Content-Type": "application/manifest+json" } }));
+  assert.equal(await (await worker.request("/manifest.webmanifest", "no-cors")).text(), '{"name":"new"}');
+  assert.equal(await (await cache.match("/manifest.webmanifest")).text(), '{"name":"new"}');
+});
+
+test("files outside /assets/ fall back to the cache offline", async () => {
+  const worker = harness(async () => { throw new Error("offline"); });
+  const cache = await worker.caches.open("athena-shell-v2");
+  await cache.put("/athena-icon-192.png", new Response("png", { headers: { "Content-Type": "image/png" } }));
+  assert.equal(await (await worker.request("/athena-icon-192.png", "no-cors")).text(), "png");
 });
