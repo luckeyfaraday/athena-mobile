@@ -24,6 +24,8 @@
 
 * { box-sizing: border-box; }
 html, body, #root { height: 100%; margin: 0; }
+/* Overrides index.html's dark startup colors once the theme is painted. */
+html { background: var(--bg); color: var(--text); }
 body { background: var(--bg); overflow: hidden; }
 button, input, textarea, select { font: inherit; color: inherit; }
 button { cursor: pointer; -webkit-tap-highlight-color: transparent; }

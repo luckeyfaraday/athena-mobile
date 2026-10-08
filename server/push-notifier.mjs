@@ -14,10 +14,10 @@
 // only thing that must keep running is this dev server.
 
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import webpush from "web-push";
 import { AttentionTracker } from "./attention.mjs";
+import { discoveryDir } from "./discovery.mjs";
 
 const SECRETS_FILE = "athena-mobile-push.json";
 const CONTROL_DISCOVERY = "electron-control.json";
@@ -329,10 +329,6 @@ function validVapidSubject(value) {
 
 // ---- secrets + discovery ----------------------------------------------------
 
-function discoveryDir() {
-  return path.join(os.homedir(), ".context-workspace");
-}
-
 function loadSecrets() {
   const file = path.join(discoveryDir(), SECRETS_FILE);
   try {
@@ -350,7 +346,8 @@ function loadSecrets() {
 
 function saveSecrets(secrets) {
   const dir = discoveryDir();
-  fs.mkdirSync(dir, { recursive: true });
+  // Private like Athena's own folder, in case this runs before Athena first creates it.
+  fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
   const file = path.join(dir, SECRETS_FILE);
   fs.writeFileSync(file, JSON.stringify(secrets, null, 2), { mode: 0o600 });
   // Tighten perms even if the file already existed with looser bits.

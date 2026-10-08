@@ -152,7 +152,7 @@ export type UsageSnapshot = {
   refresh_interval_seconds: number;
 };
 
-// Other machines on the tailnet, from the laptop's /athena-remote/machines.
+// Other machines on the tailnet, from the host's /athena-remote/machines.
 // Statuses match desktop Athena's machine switcher (remote-machines.ts).
 export type MachineStatus = "ready" | "needs-token" | "refused" | "no-athena" | "offline" | "unknown";
 
@@ -162,7 +162,7 @@ export type RemoteMachine = {
   name: string;
   os: string | null;
   online: boolean;
-  /** Signed in to the same Tailscale account as the laptop. */
+  /** Signed in to the same Tailscale account as the host. */
   ownDevice: boolean;
   status: MachineStatus;
   detail: string | null;
@@ -178,11 +178,11 @@ export type MachinesSnapshot = {
   port: number;
   machines: RemoteMachine[];
   refreshedAt: string | null;
-  /** The laptop itself, and desktop Athena's theme there. */
+  /** The host itself, and desktop Athena's theme there (null on a headless server). */
   self: { name: string | null; theme: string | null };
 };
 
-/** The machine a client talks to; null means the laptop serving this app. */
+/** The machine a client talks to; null means the host serving this app. */
 export type MachineRef = Pick<RemoteMachine, "id" | "name" | "platform" | "homedir">;
 
 // A remote control server's /agent-sessions rows: the same session as

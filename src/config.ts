@@ -6,7 +6,7 @@ export type AppConfig = {
   mode: AthenaMode;
   backendUrl: string;
   controlUrl: string;
-  /** The laptop's gateway to other machines' Athena (server/remote-machines.mjs). */
+  /** The host's gateway to other machines' Athena (server/remote-machines.mjs). */
   remoteUrl: string;
   projectDir: string;
   token: string;

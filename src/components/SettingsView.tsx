@@ -68,10 +68,11 @@ export function SettingsView({
           includeAll
           onSelect={onSelectMachine}
         />
-        <MachinesNote snapshot={machines} state={machinesState} />
+        <MachinesNote snapshot={machines} state={machinesState} hostName={localName} />
         <p className="settingsFootnote">
-          The laptop reaches each machine over Tailscale. Turn on remote access in Athena there (Settings → System). A
-          machine on another Tailscale account also needs its access token, added in Athena on this laptop.
+          {localName} reaches each machine over Tailscale. Turn on remote access in Athena there (Settings → System). A
+          machine that doesn't let {localName} in by account needs its access token: add it in desktop Athena on {localName}
+          (Settings → System → Your machines), or to remote-tokens.json in a headless server's data folder.
         </p>
       </SettingsGroup>
 
@@ -79,8 +80,8 @@ export function SettingsView({
         <div className="themeGallery" role="radiogroup" aria-label="Theme">
           <ThemeCard
             id="laptop"
-            label="Match laptop"
-            description={laptopLabel ? `Follows Athena on the laptop, now ${laptopLabel}.` : "Follows Athena's theme on the laptop."}
+            label="Match Athena"
+            description={laptopLabel ? `Follows desktop Athena on ${localName}, now ${laptopLabel}.` : `Follows desktop Athena's theme on ${localName}; Classic until it has one.`}
             preview={isThemeId(laptopTheme) ? laptopTheme : theme}
             selected={themePreference === "laptop"}
             onSelect={onThemeChange}
@@ -107,12 +108,12 @@ export function SettingsView({
         </div>
       </SettingsGroup>
 
-      <SettingsGroup title="Subscription usage" note={<span>On the laptop</span>}>
+      <SettingsGroup title="Subscription usage" note={<span>On {localName}</span>}>
         <UsageList usage={usage} onOpen={onOpenUsage} />
       </SettingsGroup>
 
       <SettingsGroup title="Notifications">
-        <NotificationsRow />
+        <NotificationsRow hostName={localName} />
       </SettingsGroup>
 
       <SettingsGroup title="Connection">
@@ -123,8 +124,8 @@ export function SettingsView({
             value={<Health ok={Boolean(connection.service?.control.healthy)} />}
           />
           <SettingsRow
-            label="Laptop backend"
-            detail={connection.service?.backend.healthy ? "Usage and the laptop's session history" : connection.service?.backend.detail ?? "Not checked"}
+            label={`${localName} backend`}
+            detail={connection.service?.backend.healthy ? `Usage and ${localName}'s session history` : connection.service?.backend.detail ?? "Not checked"}
             value={<Health ok={Boolean(connection.service?.backend.healthy)} />}
           />
           {activeMachineId === null && (
@@ -136,7 +137,7 @@ export function SettingsView({
           )}
           <SettingsRow
             label="Mode"
-            detail={connection.service?.mode === "demo" ? "Sample data; nothing reaches Athena" : "Connected to Athena through this laptop"}
+            detail={connection.service?.mode === "demo" ? "Sample data; nothing reaches Athena" : `Connected to Athena through ${localName}`}
             value={<span className="settingsValue">{connection.service?.mode === "demo" ? "Demo" : "Live"}</span>}
           />
         </div>
@@ -239,7 +240,7 @@ function ThemeCard({
 
 // Agent-attention push for this phone: enroll when off, send a test when on.
 // Explains itself where push can't work (an insecure origin, or no Push API).
-function NotificationsRow() {
+function NotificationsRow({ hostName }: { hostName: string }) {
   const [state, setState] = useState<PushState | "loading">("loading");
   const [pending, setPending] = useState(false);
   const [result, setResult] = useState<string | null>(null);
@@ -257,9 +258,9 @@ function NotificationsRow() {
   const ready = state === "granted";
   const blocked = state === "denied" || state === "insecure" || state === "unsupported";
   const detail = ready
-    ? "On. You're alerted when an agent on the laptop waits for you, finishes, or crashes."
+    ? `On. You're alerted when an agent on ${hostName} waits for you, finishes, or crashes.`
     : state === "default"
-      ? "Get alerted when an agent on the laptop waits for you, finishes, or crashes."
+      ? `Get alerted when an agent on ${hostName} waits for you, finishes, or crashes.`
       : state === "insecure"
         ? "Open the app over HTTPS (tailscale serve) to turn notifications on."
         : state === "denied"
