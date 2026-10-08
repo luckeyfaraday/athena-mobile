@@ -151,3 +151,58 @@ export type UsageSnapshot = {
   generated_at: string;
   refresh_interval_seconds: number;
 };
+
+// Other machines on the tailnet, from the laptop's /athena-remote/machines.
+// Statuses match desktop Athena's machine switcher (remote-machines.ts).
+export type MachineStatus = "ready" | "needs-token" | "refused" | "no-athena" | "offline" | "unknown";
+
+export type RemoteMachine = {
+  /** Tailscale stable node id. */
+  id: string;
+  name: string;
+  os: string | null;
+  online: boolean;
+  /** Signed in to the same Tailscale account as the laptop. */
+  ownDevice: boolean;
+  status: MachineStatus;
+  detail: string | null;
+  version: string | null;
+  /** Node's process.platform there, e.g. "win32". */
+  platform: string | null;
+  homedir: string | null;
+};
+
+export type MachinesSnapshot = {
+  tailscale: "running" | "stopped" | "unavailable";
+  account: string | null;
+  port: number;
+  machines: RemoteMachine[];
+  refreshedAt: string | null;
+  /** The laptop itself, and desktop Athena's theme there. */
+  self: { name: string | null; theme: string | null };
+};
+
+/** The machine a client talks to; null means the laptop serving this app. */
+export type MachineRef = Pick<RemoteMachine, "id" | "name" | "platform" | "homedir">;
+
+// A remote control server's /agent-sessions rows: the same session as
+// AgentSession, but camelCase from the Electron side.
+export type RemoteAgentSession = {
+  id: string;
+  provider: AgentSessionProvider;
+  title: string;
+  workspace: string;
+  branch: string | null;
+  model: string | null;
+  agent: string | null;
+  createdAt: string;
+  updatedAt: string;
+  status: "running" | "exited" | "historical";
+  terminalId: string | null;
+  pid: number | null;
+  resumeCommand: string | null;
+  metadata: Record<string, string>;
+};
+
+/** A native conversation as chat messages, from the transcript or a remote's /terminals/:id/chat. */
+export type ConversationMessage = { role: "user" | "assistant" | "tool"; text: string };

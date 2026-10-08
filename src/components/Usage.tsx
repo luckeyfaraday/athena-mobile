@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
-import { AlertTriangle, RefreshCw, X } from "lucide-react";
+import { AlertTriangle, ChevronRight, Gauge, RefreshCw, X } from "lucide-react";
 import type { AthenaClient } from "../api/athenaClient";
 import type { UsageAccount, UsageSnapshot, UsageWindow } from "../types";
 import {
@@ -22,13 +22,14 @@ import {
   usagePollDelay,
 } from "../usage";
 
-// Subscription quota bars under the header. The laptop's backend owns provider
-// logins and a shared cache; this only polls that cache (faster while a probe
-// is running, paused while the app is in the background).
+// Subscription quota for the laptop's Claude and Codex accounts: a compact
+// pill in the header, a list in Settings, and a details sheet. The laptop's
+// backend owns provider logins and a shared cache; this only polls that cache
+// (faster while a probe is running, paused while the app is in the background).
 
 type RefreshFailure = { accountKey: string | null; message: string };
 
-function useUsage(client: AthenaClient) {
+function useUsageFeed(client: AthenaClient) {
   const [snapshot, setSnapshot] = useState<UsageSnapshot | null>(null);
   const [receivedAt, setReceivedAt] = useState<number | null>(null);
   const [pollError, setPollError] = useState<string | null>(null);
@@ -142,8 +143,20 @@ function useNow(intervalMs: number): number {
   return now;
 }
 
-export function UsageStrip({ client }: { client: AthenaClient }) {
-  const { snapshot: received, receivedAt, pollError, refreshError, refreshing, refresh } = useUsage(client);
+export type UsageState = {
+  accounts: UsageAccount[];
+  /** Now on the laptop's clock; reset times and ages are laptop timestamps. */
+  now: number;
+  refreshing: boolean;
+  refresh: (accountKey?: string) => Promise<void>;
+  errorFor: (account: UsageAccount) => string | null;
+  /** True once the laptop answered; false on a host whose Athena predates usage monitoring. */
+  loaded: boolean;
+};
+
+/** One poller for every usage view. */
+export function useUsage(client: AthenaClient): UsageState {
+  const { snapshot: received, receivedAt, pollError, refreshError, refreshing, refresh } = useUsageFeed(client);
   const now = useNow(30_000);
   const snapshot = presentSnapshot(received, {
     receivedAt,
@@ -151,23 +164,6 @@ export function UsageStrip({ client }: { client: AthenaClient }) {
     pollFailed: pollError !== null,
     unreachableMessage: "Couldn't reach the laptop; showing the last values it reported.",
   });
-  // Reset times and ages are laptop timestamps; read them on the laptop's clock.
-  const hostNow = now + clockOffsetMs(received, receivedAt);
-  const [openKey, setOpenKey] = useState<string | null>(null);
-  const triggerRef = useRef<HTMLButtonElement | null>(null);
-  const accounts = snapshot?.accounts ?? [];
-  const selected = accounts.find((account) => account.key === openKey) ?? null;
-
-  // An account that drops out of the snapshot closes its sheet for good,
-  // rather than leaving a closed-but-selected sheet to pop back open later.
-  useEffect(() => {
-    if (openKey !== null && received !== null && !selected) setOpenKey(null);
-  }, [openKey, received, selected]);
-
-  // Before the first answer, or on a host whose Athena predates usage
-  // monitoring, the strip stays out of the way; the app banner covers outages.
-  if (accounts.length === 0) return null;
-
   const errorFor = (account: UsageAccount): string | null => {
     if (pollError) return `Laptop error: ${pollError}`;
     if (refreshError && (refreshError.accountKey === null || refreshError.accountKey === account.key)) {
@@ -175,40 +171,105 @@ export function UsageStrip({ client }: { client: AthenaClient }) {
     }
     return null;
   };
-  const close = () => {
-    setOpenKey(null);
-    triggerRef.current?.focus();
+  return {
+    accounts: snapshot?.accounts ?? [],
+    now: now + clockOffsetMs(received, receivedAt),
+    refreshing,
+    refresh,
+    errorFor,
+    loaded: received !== null,
   };
+}
 
+/** The account to lead with: the live one closest to a cap, else any with a reading. */
+export function busiestAccount(accounts: UsageAccount[], now: number): { account: UsageAccount; window: UsageWindow | null } | null {
+  let best: { account: UsageAccount; window: UsageWindow | null } | null = null;
+  const rank = (entry: { account: UsageAccount; window: UsageWindow | null }) =>
+    (entry.window ? 1000 + entry.window.used_percent : 0) + (isLive(entry.account) ? 2000 : 0);
+  for (const account of accounts) {
+    const entry = { account, window: headlineWindow(account, now) };
+    if (!best || rank(entry) > rank(best)) best = entry;
+  }
+  return best;
+}
+
+/**
+ * Header pill: the highest quota use across the laptop's accounts, colored by
+ * level. Tapping opens the details sheet on that account; the sheet's tabs
+ * reach the others.
+ */
+export function UsageButton({ usage, onOpen }: { usage: UsageState; onOpen: (accountKey: string, button: HTMLButtonElement) => void }) {
+  const lead = busiestAccount(usage.accounts, usage.now);
+  if (!lead) return null;
+  const { account, window } = lead;
+  const live = isLive(account);
+  const attention = usage.accounts.some((item) => ["expired", "error", "signed_out", "rate_limited"].includes(item.status));
+  const label = window
+    ? `Subscription usage: highest is ${formatPercent(window.used_percent)} of ${account.provider_name} ${window.label}${live ? "" : " (last known)"}. Show all accounts.`
+    : `Subscription usage: ${statusLabel(account)}. Show all accounts.`;
   return (
-    <>
-      <div className="usageStrip" role="group" aria-label="Subscription usage">
-        {accounts.map((account) => (
-          <UsageChip
-            key={account.key}
-            account={account}
-            accounts={accounts}
-            now={hostNow}
-            onOpen={(button) => {
-              triggerRef.current = button;
-              setOpenKey(account.key);
-            }}
-          />
-        ))}
-      </div>
-      {selected && (
-        <UsageSheet
-          account={selected}
-          accounts={accounts}
-          now={hostNow}
-          refreshing={refreshing}
-          error={errorFor(selected)}
-          onSelect={setOpenKey}
-          onRefresh={refresh}
-          onClose={close}
+    <button
+      type="button"
+      className={`usagePill${live ? "" : " notLive"}`}
+      aria-haspopup="dialog"
+      aria-label={label}
+      title={label}
+      onClick={(event) => onOpen(account.key, event.currentTarget)}
+    >
+      <Gauge size={14} aria-hidden="true" />
+      <strong className={window ? `level-${usageLevel(window.used_percent)}` : undefined}>
+        {window ? formatPercent(window.used_percent) : account.status === "loading" ? "…" : "—"}
+      </strong>
+      {attention && <i className="usagePillAlert" aria-hidden="true" />}
+    </button>
+  );
+}
+
+/** Settings list: one row per account with its quota bars. */
+export function UsageList({ usage, onOpen }: { usage: UsageState; onOpen: (accountKey: string, button: HTMLButtonElement) => void }) {
+  if (usage.accounts.length === 0) {
+    return <p className="settingsEmpty">{usage.loaded ? "No Claude or Codex accounts are signed in on the laptop." : "The laptop's Athena doesn't report subscription usage yet."}</p>;
+  }
+  return (
+    <div className="usageList" role="group" aria-label="Subscription usage">
+      {usage.accounts.map((account) => (
+        <UsageChip
+          key={account.key}
+          account={account}
+          accounts={usage.accounts}
+          now={usage.now}
+          onOpen={(button) => onOpen(account.key, button)}
         />
-      )}
-    </>
+      ))}
+    </div>
+  );
+}
+
+/** The details sheet for one account, with tabs for the rest. */
+export function UsageSheetHost({ usage, openKey, onSelect, onClose }: {
+  usage: UsageState;
+  openKey: string | null;
+  onSelect: (accountKey: string) => void;
+  onClose: () => void;
+}) {
+  const selected = usage.accounts.find((account) => account.key === openKey) ?? null;
+  // An account that drops out of the snapshot closes its sheet for good,
+  // rather than leaving a closed-but-selected sheet to pop back open later.
+  useEffect(() => {
+    if (openKey !== null && usage.loaded && !selected) onClose();
+  }, [openKey, usage.loaded, selected, onClose]);
+  if (!selected) return null;
+  return (
+    <UsageSheet
+      account={selected}
+      accounts={usage.accounts}
+      now={usage.now}
+      refreshing={usage.refreshing}
+      error={usage.errorFor(selected)}
+      onSelect={onSelect}
+      onRefresh={usage.refresh}
+      onClose={onClose}
+    />
   );
 }
 
@@ -242,6 +303,7 @@ function UsageChip({
         <strong className={headline ? `level-${usageLevel(headline.used_percent)}` : undefined}>
           {headline ? formatPercent(headline.used_percent) : account.status === "loading" ? "…" : "—"}
         </strong>
+        <ChevronRight size={14} className="usageChipChevron" aria-hidden="true" />
       </span>
       {windows.length > 0 ? (
         <span className="usageTracks" aria-hidden="true">

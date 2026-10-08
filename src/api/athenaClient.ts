@@ -1,8 +1,13 @@
 import type {
   AgentSession,
+  ConversationMessage,
   EmbeddedTerminalSession,
   HermesStatus,
+  MachineRef,
+  MachinesSnapshot,
   MobileSnapshot,
+  RemoteAgentSession,
+  RemoteMachine,
   ServiceState,
   SnapshotErrors,
   SpawnTerminalRequest,
@@ -15,8 +20,14 @@ import type {
 import type { AppConfig } from "../config";
 import { initialServiceState } from "../config";
 import { recentProjectPaths } from "../workspaces";
+import { fromRemoteSession, pathBaseName } from "../machines";
+import { parseTranscript } from "../transcript";
 
 export type AthenaClient = {
+  /** The machine whose agents this client controls; null for the laptop serving the app. */
+  readonly machine: MachineRef | null;
+  /** Past sessions' transcripts can be opened (only the laptop's backend serves them). */
+  readonly historyTranscripts: boolean;
   snapshot(projectDir?: string): Promise<MobileSnapshot>;
   refreshService(): Promise<ServiceState>;
   terminalBuffer(target: string, maxChars?: number): Promise<TerminalBuffer>;
@@ -40,6 +51,11 @@ export type AthenaClient = {
    * entry, or a live terminal's kind and providerSessionId.
    */
   sessionTranscript(ref: TranscriptRef, maxBytes?: number): Promise<string>;
+  /**
+   * A live agent's native conversation as chat messages; empty until its
+   * session log has a first message.
+   */
+  conversation(terminal: EmbeddedTerminalSession): Promise<ConversationMessage[]>;
   /** Project folders with recent native sessions in any workspace, newest first. */
   recentWorkspaces(): Promise<string[]>;
   /**
@@ -65,17 +81,39 @@ export type AthenaClient = {
 };
 
 const REQUEST_TIMEOUT_MS = 15_000;
+// A remote machine rescans its session index on request (one scan at a time,
+// cached 30 s there), so its history is re-read at most this often, and a
+// failed read waits a little before the next try.
+const REMOTE_HISTORY_TTL_MS = 60_000;
+const REMOTE_HISTORY_RETRY_MS = 15_000;
 // Scanning every provider's sessions across all workspaces took ~23 s on a
 // cold backend cache, well past the default timeout.
 const ALL_SESSIONS_TIMEOUT_MS = 60_000;
 
-export function createAthenaClient(config: AppConfig): AthenaClient {
-  if (config.mode === "live") return new HttpAthenaClient(config);
-  return new DemoAthenaClient(config);
+/** A client for the laptop (`machine` null) or for another machine reached through it. */
+export function createAthenaClient(config: AppConfig, machine: MachineRef | null = null): AthenaClient {
+  if (config.mode !== "live") return new DemoAthenaClient(config, machine);
+  return machine ? new RemoteAthenaClient(config, machine) : new HttpAthenaClient(config);
+}
+
+/** The other desktops on the tailnet, as the laptop sees them. `fresh` re-asks each machine now. */
+export async function fetchMachines(config: AppConfig, fresh = false): Promise<MachinesSnapshot> {
+  if (config.mode !== "live") return demoMachines();
+  if (!config.remoteUrl) throw new Error("Remote URL is not configured.");
+  const response = await fetch(`${config.remoteUrl}/machines${fresh ? "?fresh=1" : ""}`, {
+    signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+  });
+  if (!response.ok) throw new Error(await errorMessage(response));
+  return response.json() as Promise<MachinesSnapshot>;
 }
 
 class HttpAthenaClient implements AthenaClient {
-  constructor(private readonly config: AppConfig) {}
+  readonly machine: MachineRef | null = null;
+  readonly historyTranscripts: boolean = true;
+  constructor(
+    protected readonly config: AppConfig,
+    protected readonly controlUrl: string = config.controlUrl,
+  ) {}
 
   async snapshot(projectDir?: string): Promise<MobileSnapshot> {
     // Each section degrades independently: a down control server must not blank
@@ -119,14 +157,14 @@ class HttpAthenaClient implements AthenaClient {
   }
 
   terminalStreamUrl(target: string, maxChars = 200_000): string | null {
-    if (!this.config.controlUrl) return null;
-    return `${this.config.controlUrl}/terminals/${encodeURIComponent(target)}/stream?max_chars=${maxChars}`;
+    if (!this.controlUrl) return null;
+    return `${this.controlUrl}/terminals/${encodeURIComponent(target)}/stream?max_chars=${maxChars}`;
   }
 
   async refreshService(): Promise<ServiceState> {
     const [backend, control] = await Promise.all([
       this.probe(this.config.backendUrl, "backend"),
-      this.probe(this.config.controlUrl, "control"),
+      this.probe(this.controlUrl, "control"),
     ]);
     return {
       mode: "live",
@@ -189,6 +227,18 @@ class HttpAthenaClient implements AthenaClient {
     return this.requestText(this.config.backendUrl, path);
   }
 
+  async conversation(terminal: EmbeddedTerminalSession): Promise<ConversationMessage[]> {
+    if (terminal.kind === "shell" || !terminal.providerSessionId) return [];
+    try {
+      return parseTranscript(await this.sessionTranscript({ provider: terminal.kind, id: terminal.providerSessionId }));
+    } catch (error) {
+      // A session's log file appears with its first message; until then the
+      // backend answers 404, which just means there is nothing to show yet.
+      if (error instanceof Error && error.message.startsWith("404")) return [];
+      throw error;
+    }
+  }
+
   async recentWorkspaces(): Promise<string[]> {
     const payload = await this.backendJson<{ sessions: AgentSession[] }>("/agents/sessions/all?limit=200", {
       signal: AbortSignal.timeout(ALL_SESSIONS_TIMEOUT_MS),
@@ -216,7 +266,7 @@ class HttpAthenaClient implements AthenaClient {
     });
   }
 
-  private async probe(baseUrl: string, label: string) {
+  protected async probe(baseUrl: string, label: string) {
     if (!baseUrl) {
       return { baseUrl: null, healthy: false, detail: `${label} URL is not configured.` };
     }
@@ -228,15 +278,15 @@ class HttpAthenaClient implements AthenaClient {
     }
   }
 
-  private backendJson<T>(path: string, init?: RequestInit): Promise<T> {
+  protected backendJson<T>(path: string, init?: RequestInit): Promise<T> {
     return this.request<T>(this.config.backendUrl, path, init);
   }
 
-  private controlJson<T>(path: string, init?: RequestInit): Promise<T> {
-    return this.request<T>(this.config.controlUrl, path, init);
+  protected controlJson<T>(path: string, init?: RequestInit): Promise<T> {
+    return this.request<T>(this.controlUrl, path, init);
   }
 
-  private async request<T>(baseUrl: string, path: string, init: RequestInit = {}): Promise<T> {
+  protected async request<T>(baseUrl: string, path: string, init: RequestInit = {}): Promise<T> {
     if (!baseUrl) throw new Error("Base URL is not configured.");
     const response = await fetch(`${baseUrl}${path}`, {
       ...init,
@@ -264,10 +314,112 @@ class HttpAthenaClient implements AthenaClient {
   }
 }
 
-class DemoAthenaClient implements AthenaClient {
-  private terminals = demoTerminals;
+// Another machine's Athena through the laptop. Its control API is the same as
+// the laptop's (terminals, streams, input, spawn); history comes from that
+// machine's /agent-sessions and conversations from its /terminals/:id/chat,
+// since only the laptop's Python backend is reachable from here. Usage stays
+// the laptop's: it describes the laptop's signed-in accounts.
+class RemoteAthenaClient extends HttpAthenaClient {
+  override readonly historyTranscripts = false;
+  private history: { workspace: string; at: number; sessions: AgentSession[]; error: Error | null } | null = null;
 
-  constructor(private readonly config: AppConfig) {}
+  constructor(
+    config: AppConfig,
+    override readonly machine: MachineRef,
+  ) {
+    super(config, `${config.remoteUrl}/m/${encodeURIComponent(machine.id)}`);
+  }
+
+  override async snapshot(projectDir?: string): Promise<MobileSnapshot> {
+    const errors: SnapshotErrors = {};
+    const settle = <T>(section: keyof SnapshotErrors, request: Promise<T>, fallback: T): Promise<T> =>
+      request.catch((error: unknown) => {
+        errors[section] = this.explain(error, "session history");
+        return fallback;
+      });
+    const [service, terminals, recentSessions] = await Promise.all([
+      this.refreshService(),
+      settle(
+        "terminals",
+        this.controlJson<{ terminals: EmbeddedTerminalSession[] }>("/terminals").then((payload) => payload.terminals),
+        [],
+      ),
+      projectDir
+        ? settle(
+            "sessions",
+            this.recentSessions(projectDir),
+            [],
+          )
+        : Promise.resolve([]),
+    ]);
+    return {
+      service,
+      hermes: null,
+      terminals,
+      recentSessions,
+      workspaces: summarizeWorkspaces(terminals, recentSessions),
+      errors,
+    };
+  }
+
+  private async recentSessions(workspace: string): Promise<AgentSession[]> {
+    const cached = this.history?.workspace === workspace ? this.history : null;
+    const age = cached ? Date.now() - cached.at : Infinity;
+    if (cached && !cached.error && age < REMOTE_HISTORY_TTL_MS) return cached.sessions;
+    if (cached?.error && age < REMOTE_HISTORY_RETRY_MS) throw cached.error;
+    try {
+      const payload = await this.controlJson<{ sessions: RemoteAgentSession[] }>(`/agent-sessions?workspace=${encodeURIComponent(workspace)}`);
+      const sessions = payload.sessions.slice(0, 25).map(fromRemoteSession);
+      this.history = { workspace, at: Date.now(), sessions, error: null };
+      return sessions;
+    } catch (error) {
+      this.history = { workspace, at: Date.now(), sessions: cached?.sessions ?? [], error: error instanceof Error ? error : new Error(String(error)) };
+      throw error;
+    }
+  }
+
+  override async sessionTranscript(): Promise<string> {
+    throw new Error(`Past transcripts aren't available from ${this.machine.name} yet. Resume the session to see it.`);
+  }
+
+  override async conversation(terminal: EmbeddedTerminalSession): Promise<ConversationMessage[]> {
+    if (terminal.kind === "shell" || !terminal.providerSessionId) return [];
+    try {
+      const snapshot = await this.controlJson<{ messages: { role: "user" | "assistant"; text: string }[]; missing?: boolean }>(
+        `/terminals/${encodeURIComponent(terminal.id)}/chat`,
+      );
+      return snapshot.messages.map((message) => ({ role: message.role, text: message.text }));
+    } catch (error) {
+      throw new Error(this.explain(error, "the conversation view"));
+    }
+  }
+
+  override async recentWorkspaces(): Promise<string[]> {
+    const payload = await this.controlJson<{ workspaces: { nativePath: string }[] }>("/workspaces");
+    return payload.workspaces.map((workspace) => workspace.nativePath).filter(Boolean);
+  }
+
+  // An older Athena there answers 404 "Unknown control endpoint" for routes it predates.
+  private explain(error: unknown, feature: string): string {
+    const message = error instanceof Error ? error.message : String(error);
+    if (/Unknown control endpoint/.test(message)) {
+      return `${this.machine.name} runs an Athena without ${feature}; update Athena there to use it. The terminal view works.`;
+    }
+    return message;
+  }
+}
+
+class DemoAthenaClient implements AthenaClient {
+  private terminals: EmbeddedTerminalSession[];
+  readonly historyTranscripts: boolean;
+
+  constructor(
+    private readonly config: AppConfig,
+    readonly machine: MachineRef | null = null,
+  ) {
+    this.terminals = machine ? demoRemoteTerminals(machine) : demoTerminals;
+    this.historyTranscripts = machine === null;
+  }
 
   async snapshot(): Promise<MobileSnapshot> {
     const service = initialServiceState(this.config);
@@ -279,8 +431,8 @@ class DemoAthenaClient implements AthenaClient {
       },
       hermes: demoHermes,
       terminals: this.terminals,
-      recentSessions: demoSessions,
-      workspaces: summarizeWorkspaces(this.terminals, demoSessions),
+      recentSessions: this.machine ? demoRemoteSessions : demoSessions,
+      workspaces: summarizeWorkspaces(this.terminals, this.machine ? demoRemoteSessions : demoSessions),
     };
   }
 
@@ -386,7 +538,16 @@ class DemoAthenaClient implements AthenaClient {
     ].join("\n");
   }
 
+  async conversation(terminal: EmbeddedTerminalSession): Promise<ConversationMessage[]> {
+    if (terminal.kind === "shell" || !terminal.providerSessionId) return [];
+    return [
+      { role: "user", text: terminal.initialTask || "What's the status?" },
+      { role: "assistant", text: `Demo conversation for ${terminal.title}. Live mode shows the agent's real session.` },
+    ];
+  }
+
   async recentWorkspaces(): Promise<string[]> {
+    if (this.machine) return Array.from(new Set(this.terminals.map((terminal) => terminal.workspace)));
     return ["/home/alan/home_ai/projects/context-workspace", "/home/alan/home_ai/projects/athena-mobile"];
   }
 
@@ -415,7 +576,7 @@ export function summarizeWorkspaces(terminals: EmbeddedTerminalSession[], sessio
   const paths = new Set([...terminals.map((entry) => entry.workspace), ...sessions.map((entry) => entry.workspace)]);
   return Array.from(paths).map((path) => ({
     path,
-    name: path.split("/").filter(Boolean).at(-1) || path,
+    name: pathBaseName(path),
     liveTerminals: terminals.filter((entry) => entry.workspace === path && entry.status === "running").length,
     recentSessions: sessions.filter((entry) => entry.workspace === path).length,
   }));
@@ -478,6 +639,80 @@ const demoSessions: AgentSession[] = [
     agent: "codex",
     created_at: new Date(Date.now() - 6 * 60 * 60_000).toISOString(),
     updated_at: new Date(Date.now() - 5 * 60 * 60_000).toISOString(),
+    status: "historical",
+    terminal_id: null,
+    pid: null,
+    resume_command: null,
+    metadata: {},
+  },
+];
+
+// One machine per state the switcher must render: ready (on Windows), one
+// that needs its access token, and one that is offline.
+function demoMachines(): MachinesSnapshot {
+  const machine = (overrides: Partial<RemoteMachine> & Pick<RemoteMachine, "id" | "name" | "status">): RemoteMachine => ({
+    os: "linux",
+    online: true,
+    ownDevice: true,
+    detail: null,
+    version: null,
+    platform: null,
+    homedir: null,
+    ...overrides,
+  });
+  return {
+    tailscale: "running",
+    account: "ada@example.com",
+    port: 47821,
+    refreshedAt: new Date().toISOString(),
+    self: { name: "ada-laptop", theme: "classic" },
+    machines: [
+      machine({ id: "demo-studio", name: "studio-pc", os: "windows", status: "ready", version: "0.4.1", platform: "win32", homedir: "C:\\Users\\ada" }),
+      machine({
+        id: "demo-build",
+        name: "build-server",
+        status: "needs-token",
+        ownDevice: false,
+        detail: "Not on your Tailscale account. Add its access token in Athena on this laptop (Settings → System → Your machines).",
+      }),
+      machine({ id: "demo-old", name: "old-laptop", status: "offline", online: false }),
+    ],
+  };
+}
+
+function demoRemoteTerminals(machine: MachineRef): EmbeddedTerminalSession[] {
+  const home = machine.homedir ?? (machine.platform === "win32" ? "C:\\Users\\ada" : "/home/ada");
+  const separator = machine.platform === "win32" ? "\\" : "/";
+  return [
+    {
+      id: `demo-${machine.id}-claude`,
+      title: "Claude",
+      kind: "claude",
+      workspace: `${home}${separator}game-port`,
+      pid: 7700,
+      promptPath: null,
+      initialTask: "Port the renderer to Vulkan and report blockers.",
+      sessionLabel: "Live",
+      providerSessionId: "demo-remote-claude",
+      createdAt: new Date(Date.now() - 9 * 60_000).toISOString(),
+      status: "running",
+      exitCode: null,
+      error: null,
+    },
+  ];
+}
+
+const demoRemoteSessions: AgentSession[] = [
+  {
+    id: "demo-remote-session-1",
+    provider: "codex",
+    title: "Shader cache investigation",
+    workspace: "C:\\Users\\ada\\game-port",
+    branch: null,
+    model: "gpt-5",
+    agent: null,
+    created_at: new Date(Date.now() - 26 * 60 * 60_000).toISOString(),
+    updated_at: new Date(Date.now() - 25 * 60 * 60_000).toISOString(),
     status: "historical",
     terminal_id: null,
     pid: null,

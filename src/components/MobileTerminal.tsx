@@ -12,6 +12,8 @@ type Props = {
   sessionId: string;
   /** Raw keystroke bytes from xterm (Enter, arrows, control codes), sent to the PTY verbatim. */
   onInput: (data: string) => void;
+  /** The painted theme; a change recolors the open terminal. */
+  theme: string;
 };
 
 // The control server spawns PTYs at 96 columns and the agent TUIs (Claude Code,
@@ -24,7 +26,7 @@ const FONT_SIZE = 11;
 const LINE_HEIGHT = 1.2;
 const MONO_FONT = "ui-monospace, 'SF Mono', Menlo, Consolas, monospace";
 
-export function MobileTerminal({ streamUrl, sessionId, onInput }: Props) {
+export function MobileTerminal({ streamUrl, sessionId, onInput, theme }: Props) {
   const mountRef = useRef<HTMLDivElement | null>(null);
   const terminalRef = useRef<Terminal | null>(null);
   // Hold the latest onInput so the data handler isn't baked into the mount effect
@@ -181,6 +183,12 @@ export function MobileTerminal({ streamUrl, sessionId, onInput }: Props) {
   // soft keyboard so typed characters reach the PTY.
   const focusTerminal = () => terminalRef.current?.focus();
 
+
+  // App repaints the document in a layout effect, so the new tokens are in place here.
+  useEffect(() => {
+    if (terminalRef.current) terminalRef.current.options.theme = readTerminalTheme();
+  }, [theme]);
+
   return (
     <div className="mobileTerminal">
       <div className="mobileTerminalMount" ref={mountRef} onClick={focusTerminal} />
@@ -217,13 +225,32 @@ function base64ToBytes(payloadBase64: string): Uint8Array {
   return bytes;
 }
 
+// The theme's terminal tokens, the same ones desktop Athena gives its xterm.
 function readTerminalTheme(): ITheme {
   const root = getComputedStyle(document.documentElement);
   const value = (name: string, fallback: string) => root.getPropertyValue(name).trim() || fallback;
+  const ansi = (name: string) => root.getPropertyValue(`--ansi-${name}`).trim() || undefined;
   return {
     background: value("--terminal", "#000000"),
     foreground: value("--text", "#f5f5f5"),
     cursor: value("--accent", "#fafafa"),
-    selectionBackground: "rgba(250, 250, 250, 0.24)",
+    cursorAccent: value("--terminal", "#000000"),
+    selectionBackground: root.colorScheme === "light" ? "rgba(0, 0, 0, 0.18)" : "rgba(250, 250, 250, 0.24)",
+    black: ansi("black"),
+    red: ansi("red"),
+    green: ansi("green"),
+    yellow: ansi("yellow"),
+    blue: ansi("blue"),
+    magenta: ansi("magenta"),
+    cyan: ansi("cyan"),
+    white: ansi("white"),
+    brightBlack: ansi("bright-black"),
+    brightRed: ansi("bright-red"),
+    brightGreen: ansi("bright-green"),
+    brightYellow: ansi("bright-yellow"),
+    brightBlue: ansi("bright-blue"),
+    brightMagenta: ansi("bright-magenta"),
+    brightCyan: ansi("bright-cyan"),
+    brightWhite: ansi("bright-white"),
   };
 }

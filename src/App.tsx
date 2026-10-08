@@ -1,8 +1,5 @@
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
-  Bell,
-  BellOff,
-  BellRing,
   Bot,
   ChevronDown,
   CircleStop,
@@ -13,28 +10,42 @@ import {
   MessageSquareText,
   Play,
   Plus,
-  RefreshCw,
   RotateCcw,
+  Settings,
   TerminalSquare,
   X,
 } from "lucide-react";
-import { createAthenaClient, summarizeWorkspaces } from "./api/athenaClient";
-import { readConfig } from "./config";
-import { enablePush, pushState, sendTestPush, type PushState } from "./push/notifications";
+import { createAthenaClient, fetchMachines, summarizeWorkspaces } from "./api/athenaClient";
+import { readConfig, type AppConfig } from "./config";
 import { ConversationView } from "./components/ConversationView";
+import { MachineButton, MachineSheet, type MachinesLoadState } from "./components/Machines";
 import { MobileTerminal } from "./components/MobileTerminal";
-import { UsageStrip } from "./components/UsageStrip";
+import { SettingsView, type ConnectionInfo } from "./components/SettingsView";
+import { UsageButton, UsageSheetHost, useUsage } from "./components/Usage";
+import { isWindowsMachine, machineStorageKey, normalizeFolderInput, pathBaseName } from "./machines";
+import {
+  applyTheme,
+  readLaptopTheme,
+  readThemePreference,
+  resolveTheme,
+  systemPrefersLight,
+  writeLaptopTheme,
+  writeThemePreference,
+  type ThemeId,
+  type ThemePreference,
+} from "./themes";
 import type { AthenaClient } from "./api/athenaClient";
 import type {
   AgentSession,
   EmbeddedTerminalKind,
   EmbeddedTerminalSession,
+  MachineRef,
+  MachinesSnapshot,
   MobileSnapshot,
   SnapshotErrors,
-  TranscriptRef,
 } from "./types";
 
-type Tab = "agents" | "launch" | "history" | "workspaces";
+type Tab = "agents" | "launch" | "history" | "settings";
 
 /** How the selected agent is shown: its conversation, or the live terminal. */
 type AgentView = "chat" | "terminal";
@@ -58,27 +69,276 @@ const SNAPSHOT_REFRESH_MS = 5000;
 // refresh them at most this often while Launch is open.
 const RECENT_WORKSPACES_REFRESH_MS = 5 * 60_000;
 const LAUNCHED_WORKSPACES_LIMIT = 8;
+// Machines change rarely; re-ask while the app is open, and on demand.
+const MACHINES_REFRESH_MS = 60_000;
 
 export function App() {
   const config = useMemo(() => readConfig(), []);
-  const client = useMemo(() => createAthenaClient(config), [config]);
+  // Usage always describes the laptop's signed-in accounts, whichever machine is in view.
+  const laptopClient = useMemo(() => createAthenaClient(config), [config]);
 
-  // Hydrate the cross-reload state (tab, selected terminal, last snapshot) so a
-  // backgrounded PWA that the OS evicted comes back to the same view with its last
-  // known content already on screen, then revalidates — instead of a blank UI that
-  // blocks on the first network round-trip.
-  const [tab, setTab] = useState<Tab>(() => loadPersisted<Tab>(STORAGE_KEYS.tab, "agents"));
-  const [agentView, setAgentView] = useState<AgentView>(() => loadPersisted<AgentView>(STORAGE_KEYS.agentView, "chat"));
-  const [snapshot, setSnapshot] = useState<MobileSnapshot | null>(() =>
-    loadPersisted<MobileSnapshot | null>(STORAGE_KEYS.snapshot, null),
+  // Hydrate the cross-reload state (tab, machine, theme) so a backgrounded PWA
+  // that the OS evicted comes back to the same view before any network answer.
+  const [tab, setTab] = useState<Tab>(() => parseTab(loadPersisted<string>(STORAGE_KEYS.tab, "agents")));
+  const [machines, setMachines] = useState<MachinesSnapshot | null>(() =>
+    loadPersisted<MachinesSnapshot | null>(STORAGE_KEYS.machines, null),
   );
-  const [selectedTerminalId, setSelectedTerminalId] = useState<string | null>(() =>
-    loadPersisted<string | null>(STORAGE_KEYS.selectedTerminalId, null),
-  );
+  const [machinesState, setMachinesState] = useState<MachinesLoadState>({ loading: false, error: null });
   const [pendingNotificationTarget, setPendingNotificationTarget] = useState<NotificationTarget | null>(() =>
     parseNotificationTarget(window.location.href) ??
     loadPersisted<NotificationTarget | null>(STORAGE_KEYS.pendingNotificationTarget, null),
   );
+  // Alerts come from the laptop's agents, so an unhandled one opens the laptop.
+  const [machineId, setMachineId] = useState<string | null>(() =>
+    pendingNotificationTarget ? null : loadPersisted<string | null>(STORAGE_KEYS.machineId, null),
+  );
+  const [machineSheetOpen, setMachineSheetOpen] = useState(false);
+  const [connection, setConnection] = useState<ConnectionInfo>({ service: null, hermes: null, running: null });
+
+  const activeMachine = machineId ? machines?.machines.find((machine) => machine.id === machineId) ?? null : null;
+  const machineName = activeMachine?.name ?? loadPersisted<string | null>(STORAGE_KEYS.machineName, null) ?? "Other machine";
+  const localName = machines?.self.name ?? "This laptop";
+  // Only the id picks the machine; name and platform just label it, so the
+  // client survives a machines refresh.
+  const machineRef = useMemo<MachineRef | null>(
+    () => (machineId ? { id: machineId, name: machineName, platform: activeMachine?.platform ?? null, homedir: activeMachine?.homedir ?? null } : null),
+    [machineId, machineName, activeMachine?.platform, activeMachine?.homedir],
+  );
+  const client = useMemo(() => createAthenaClient(config, machineRef), [config, machineRef]);
+
+  // ── Theme: the phone's choice, the laptop's desktop theme, or the phone's light/dark setting.
+  const [themePreference, setThemePreference] = useState<ThemePreference>(readThemePreference);
+  const [laptopTheme, setLaptopTheme] = useState<string | null>(readLaptopTheme);
+  const [prefersLight, setPrefersLight] = useState(systemPrefersLight);
+  const theme: ThemeId = resolveTheme(themePreference, laptopTheme, prefersLight);
+  // A layout effect, so children's effects (the terminal's palette) read the new tokens.
+  useLayoutEffect(() => applyTheme(theme), [theme]);
+  useEffect(() => {
+    if (typeof window.matchMedia !== "function") return;
+    const query = window.matchMedia("(prefers-color-scheme: light)");
+    const onChange = () => setPrefersLight(query.matches);
+    query.addEventListener("change", onChange);
+    return () => query.removeEventListener("change", onChange);
+  }, []);
+  const changeTheme = (preference: ThemePreference) => {
+    setThemePreference(preference);
+    writeThemePreference(preference);
+  };
+
+  // ── Usage: one poller for the header pill, Settings, and the details sheet.
+  const usage = useUsage(laptopClient);
+  const [usageOpenKey, setUsageOpenKey] = useState<string | null>(null);
+  const usageTriggerRef = useRef<HTMLButtonElement | null>(null);
+  const openUsage = (accountKey: string, button: HTMLButtonElement) => {
+    usageTriggerRef.current = button;
+    setUsageOpenKey(accountKey);
+  };
+  const closeUsage = useCallback(() => {
+    setUsageOpenKey(null);
+    usageTriggerRef.current?.focus();
+  }, []);
+
+  // ── Machines on the tailnet, as the laptop sees them.
+  const machinesInFlight = useRef(false);
+  const loadMachines = useCallback(
+    async (fresh = false) => {
+      if (machinesInFlight.current) return;
+      machinesInFlight.current = true;
+      setMachinesState((current) => ({ ...current, loading: true }));
+      try {
+        const next = await fetchMachines(config, fresh);
+        setMachines(next);
+        setLaptopTheme(next.self.theme);
+        writeLaptopTheme(next.self.theme);
+        setMachinesState({ loading: false, error: null });
+      } catch (machinesError) {
+        setMachinesState({ loading: false, error: messageOf(machinesError) });
+      } finally {
+        machinesInFlight.current = false;
+      }
+    },
+    [config],
+  );
+  useEffect(() => {
+    let interval: number | undefined;
+    const start = () => {
+      if (interval !== undefined) return;
+      void loadMachines();
+      interval = window.setInterval(() => void loadMachines(), MACHINES_REFRESH_MS);
+    };
+    const stop = () => {
+      window.clearInterval(interval);
+      interval = undefined;
+    };
+    const onVisibility = () => (document.visibilityState === "visible" ? start() : stop());
+    onVisibility();
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => {
+      stop();
+      document.removeEventListener("visibilitychange", onVisibility);
+    };
+  }, [loadMachines]);
+
+  const selectMachine = (next: string | null) => {
+    const machine = next ? machines?.machines.find((entry) => entry.id === next) : null;
+    if (next && machine?.status !== "ready" && next !== machineId) return;
+    setMachineSheetOpen(false);
+    if (next === machineId) return;
+    setMachineId(next);
+    persist(STORAGE_KEYS.machineName, machine?.name ?? null);
+    setConnection({ service: null, hermes: null, running: null });
+    if (tab === "settings") setTab("agents");
+  };
+
+  useEffect(() => persist(STORAGE_KEYS.tab, tab), [tab]);
+  useEffect(() => persist(STORAGE_KEYS.machines, machines), [machines]);
+  useEffect(() => persist(STORAGE_KEYS.machineId, machineId), [machineId]);
+  useEffect(() => persist(STORAGE_KEYS.pendingNotificationTarget, pendingNotificationTarget), [pendingNotificationTarget]);
+
+  // Deep-link from a notification: focus the agent it fired for. Covers both the
+  // cold open (the SW launched a new window at /?terminal=…&workspace=…) and a
+  // warm focus (the SW posts a message to the already-open app). Alerts come
+  // from the laptop's agents, so they always switch back to the laptop.
+  useEffect(() => {
+    const focusTerminal = (rawUrl: string) => {
+      const target = parseNotificationTarget(rawUrl);
+      if (!target) return;
+      setMachineId(null);
+      setPendingNotificationTarget(target);
+      setTab("agents");
+    };
+    focusTerminal(window.location.href);
+    // The target is saved now; leave the URL clean so a later reload doesn't replay the tap.
+    clearNotificationQuery();
+    if (!("serviceWorker" in navigator)) return;
+    const onMessage = (event: MessageEvent) => {
+      if (event.data?.type === "athena-notification-click") focusTerminal(event.data.url);
+    };
+    navigator.serviceWorker.addEventListener("message", onMessage);
+    return () => navigator.serviceWorker.removeEventListener("message", onMessage);
+  }, []);
+
+  const controlOnline = Boolean(connection.service?.control.healthy);
+
+  return (
+    <div className="appShell">
+      <header className="topBar">
+        <img className="brandMark" src="/athena-icon-256.png" alt="Athena" width={28} height={28} />
+        <MachineButton
+          name={machineId ? machineName : localName}
+          remote={machineId !== null}
+          online={controlOnline}
+          onOpen={() => {
+            setMachineSheetOpen(true);
+            void loadMachines(true);
+          }}
+        />
+        <div className="topActions">
+          {config.mode === "demo" && <span className="modeTag">Demo</span>}
+          <UsageButton usage={usage} onOpen={openUsage} />
+        </div>
+      </header>
+
+      <MachineConsole
+        key={machineId ?? "laptop"}
+        config={config}
+        client={client}
+        machine={machineRef}
+        tab={tab}
+        theme={theme}
+        notificationTarget={machineId === null ? pendingNotificationTarget : null}
+        onNotificationHandled={() => setPendingNotificationTarget(null)}
+        onTabChange={setTab}
+        onConnection={setConnection}
+      />
+
+      {tab === "settings" && (
+        <main className="content">
+          <SettingsView
+            machines={machines}
+            machinesState={machinesState}
+            activeMachineId={machineId}
+            machineName={machineName}
+            localName={localName}
+            connection={connection}
+            themePreference={themePreference}
+            theme={theme}
+            laptopTheme={laptopTheme}
+            usage={usage}
+            onSelectMachine={selectMachine}
+            onRefreshMachines={() => void loadMachines(true)}
+            onThemeChange={changeTheme}
+            onOpenUsage={openUsage}
+          />
+        </main>
+      )}
+
+      {machineSheetOpen && (
+        <MachineSheet
+          snapshot={machines}
+          state={machinesState}
+          activeId={machineId}
+          localName={localName}
+          localRunning={machineId === null ? connection.running : null}
+          onSelect={selectMachine}
+          onRefresh={() => void loadMachines(true)}
+          onManage={() => {
+            setMachineSheetOpen(false);
+            setTab("settings");
+          }}
+          onClose={() => setMachineSheetOpen(false)}
+        />
+      )}
+      <UsageSheetHost usage={usage} openKey={usageOpenKey} onSelect={setUsageOpenKey} onClose={closeUsage} />
+
+      <nav className="tabBar" aria-label="Sections">
+        <TabButton active={tab === "agents"} onClick={() => setTab("agents")} icon={<TerminalSquare size={19} />} label="Agents" badge={connection.running ?? 0} />
+        <TabButton active={tab === "launch"} onClick={() => setTab("launch")} icon={<Play size={19} />} label="Launch" />
+        <TabButton active={tab === "history"} onClick={() => setTab("history")} icon={<History size={19} />} label="History" />
+        <TabButton active={tab === "settings"} onClick={() => setTab("settings")} icon={<Settings size={19} />} label="Settings" />
+      </nav>
+    </div>
+  );
+}
+
+// Everything about one machine's agents: live terminals, launching, history.
+// Keyed by machine in App, so switching machines starts from that machine's
+// own saved state instead of carrying selections across.
+function MachineConsole({
+  config,
+  client,
+  machine,
+  tab,
+  theme,
+  notificationTarget,
+  onNotificationHandled,
+  onTabChange: setTab,
+  onConnection,
+}: {
+  config: AppConfig;
+  client: AthenaClient;
+  machine: MachineRef | null;
+  tab: Tab;
+  theme: ThemeId;
+  notificationTarget: NotificationTarget | null;
+  onNotificationHandled: () => void;
+  onTabChange: (tab: Tab) => void;
+  onConnection: (connection: ConnectionInfo) => void;
+}) {
+  const machineId = machine?.id ?? null;
+  const key = (base: string) => machineStorageKey(base, machineId);
+  // Polling outlives renders; always use the newest client (its labels can change).
+  const clientRef = useRef(client);
+  clientRef.current = client;
+
+  const [agentView, setAgentView] = useState<AgentView>(() => loadPersisted<AgentView>(STORAGE_KEYS.agentView, "chat"));
+  const [snapshot, setSnapshot] = useState<MobileSnapshot | null>(() =>
+    loadPersisted<MobileSnapshot | null>(key(STORAGE_KEYS.snapshot), null),
+  );
+  const [selectedTerminalId, setSelectedTerminalId] = useState<string | null>(() =>
+    notificationTarget?.terminalId ?? loadPersisted<string | null>(key(STORAGE_KEYS.selectedTerminalId), null),
+  );
+  const pendingNotificationTarget = notificationTarget;
   const [launchTask, setLaunchTask] = useState("");
   const [launchKind, setLaunchKind] = useState<EmbeddedTerminalKind>("codex");
   // null until the user picks or types a folder; "" when they cleared the field.
@@ -86,10 +346,10 @@ export function App() {
   // Folders launched from this phone, and project folders from session history
   // in any workspace. Both persist so the picker is full before any fetch.
   const [launchedWorkspaces, setLaunchedWorkspaces] = useState<string[]>(() =>
-    loadPersisted<string[]>(STORAGE_KEYS.launchedWorkspaces, []),
+    loadPersisted<string[]>(key(STORAGE_KEYS.launchedWorkspaces), []),
   );
   const [recentWorkspaces, setRecentWorkspaces] = useState<string[]>(() =>
-    loadPersisted<string[]>(STORAGE_KEYS.recentWorkspaces, []),
+    loadPersisted<string[]>(key(STORAGE_KEYS.recentWorkspaces), []),
   );
   const [recentState, setRecentState] = useState<{ loading: boolean; error: string | null }>({ loading: false, error: null });
   const recentFetchedAt = useRef(0);
@@ -97,17 +357,25 @@ export function App() {
   const [error, setError] = useState<string | null>(null);
   const [transcript, setTranscript] = useState<TranscriptView | null>(null);
   const refreshInFlight = useRef(false);
+  // Set once this session has loaded the live terminal list (not a saved copy).
+  const terminalsLoaded = useRef(false);
   const refreshQueued = useRef(false);
 
   const terminals = snapshot?.terminals ?? [];
   const selectedTerminal =
     terminals.find((entry) => entry.id === selectedTerminalId) ??
     (selectedTerminalId && pendingNotificationTarget ? null : terminals[0] ?? null);
+  // The configured project folder is a laptop path; another machine starts
+  // from its own open folders instead.
+  const projectDir = machine ? "" : config.projectDir;
   const primaryWorkspace =
-    selectedTerminal?.workspace || pendingNotificationTarget?.workspace || snapshot?.workspaces[0]?.path || config.projectDir;
+    selectedTerminal?.workspace ||
+    pendingNotificationTarget?.workspace ||
+    snapshot?.workspaces[0]?.path ||
+    projectDir ||
+    recentWorkspaces[0] ||
+    "";
 
-  // Every workspace the user can spawn into: the configured project dir plus any
-  // discovered from live terminals or recent sessions, de-duplicated and ordered.
   // Every workspace the user can spawn into: live terminals' workspaces first,
   // then folders launched from here, the configured project dir, and recent
   // projects from session history, de-duplicated in that order.
@@ -115,12 +383,12 @@ export function App() {
     const paths = new Set<string>();
     for (const terminal of terminals) paths.add(terminal.workspace);
     for (const path of launchedWorkspaces) paths.add(path);
-    if (config.projectDir) paths.add(config.projectDir);
+    if (projectDir) paths.add(projectDir);
     for (const workspace of snapshot?.workspaces ?? []) paths.add(workspace.path);
     for (const path of recentWorkspaces) paths.add(path);
     return Array.from(paths).filter(Boolean);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [snapshot, terminals, launchedWorkspaces, recentWorkspaces, config.projectDir]);
+  }, [snapshot, terminals, launchedWorkspaces, recentWorkspaces, projectDir]);
   const launchWorkspaceResolved = launchWorkspace ?? (workspaceOptions[0] || primaryWorkspace || "");
 
   // The polling effect below captures `refresh` once (empty deps), so route the
@@ -140,7 +408,8 @@ export function App() {
     refreshInFlight.current = true;
     setError(null);
     try {
-      const next = await client.snapshot(primaryWorkspaceRef.current || undefined);
+      const next = await clientRef.current.snapshot(primaryWorkspaceRef.current || undefined);
+      if (!next.errors?.terminals) terminalsLoaded.current = true;
       setSnapshot((previous) => keepLastLoaded(previous, next));
       setSelectedTerminalId((current) => current ?? next.terminals[0]?.id ?? null);
     } catch (refreshError) {
@@ -154,17 +423,18 @@ export function App() {
     }
   }
 
-  function queueNotificationTarget(target: NotificationTarget) {
-    if (target.workspace) {
-      primaryWorkspaceRef.current = target.workspace;
-      setLaunchWorkspace(target.workspace);
+  // A notification tapped while the app was open: follow it to its workspace.
+  useEffect(() => {
+    if (!notificationTarget) return;
+    if (notificationTarget.workspace) {
+      primaryWorkspaceRef.current = notificationTarget.workspace;
+      setLaunchWorkspace(notificationTarget.workspace);
     }
-    setPendingNotificationTarget(target);
-    setSelectedTerminalId(target.terminalId);
-    if (target.view) setAgentView(target.view);
-    setTab("agents");
+    setSelectedTerminalId(notificationTarget.terminalId);
+    if (notificationTarget.view) setAgentView(notificationTarget.view);
     void refresh();
-  }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [notificationTarget]);
 
   // Poll only while the tab is foregrounded: a hidden PWA can't show updates, and
   // stopping the timer (plus the SSE in MobileTerminal) lets the browser keep the
@@ -197,14 +467,15 @@ export function App() {
   }, []);
 
   // Mirror the cross-reload state back to storage as it changes.
-  useEffect(() => persist(STORAGE_KEYS.tab, tab), [tab]);
-  useEffect(() => persist(STORAGE_KEYS.launchedWorkspaces, launchedWorkspaces), [launchedWorkspaces]);
-  useEffect(() => persist(STORAGE_KEYS.recentWorkspaces, recentWorkspaces), [recentWorkspaces]);
+  useEffect(() => persist(key(STORAGE_KEYS.launchedWorkspaces), launchedWorkspaces), [launchedWorkspaces]);
+  useEffect(() => persist(key(STORAGE_KEYS.recentWorkspaces), recentWorkspaces), [recentWorkspaces]);
 
-  // Load recent projects when Launch opens. The request is not cancelled on
-  // cleanup: the result is still worth keeping if the user has moved on.
+  // Load recent projects when Launch opens, or History on another machine,
+  // which has no configured folder to fall back on. The request is not
+  // cancelled on cleanup: the result is still worth keeping if the user has moved on.
   useEffect(() => {
-    if (tab !== "launch" || Date.now() - recentFetchedAt.current < RECENT_WORKSPACES_REFRESH_MS) return;
+    const wanted = tab === "launch" || (tab === "history" && machine !== null);
+    if (!wanted || Date.now() - recentFetchedAt.current < RECENT_WORKSPACES_REFRESH_MS) return;
     recentFetchedAt.current = Date.now();
     setRecentState({ loading: true, error: null });
     client
@@ -212,21 +483,35 @@ export function App() {
       .then((paths) => {
         setRecentWorkspaces(paths);
         setRecentState({ loading: false, error: null });
+        // History lists the primary folder's sessions; fetch them now it has one.
+        if (!primaryWorkspaceRef.current && paths[0]) {
+          primaryWorkspaceRef.current = paths[0];
+          void refresh();
+        }
       })
       .catch((recentError) => {
         // Retry on the next visit rather than waiting out the refresh interval.
         recentFetchedAt.current = 0;
         setRecentState({ loading: false, error: messageOf(recentError) });
       });
-  }, [tab, client]);
+  }, [tab, client, machine]);
   useEffect(() => persist(STORAGE_KEYS.agentView, agentView), [agentView]);
-  useEffect(() => persist(STORAGE_KEYS.snapshot, snapshot), [snapshot]);
-  useEffect(() => persist(STORAGE_KEYS.selectedTerminalId, selectedTerminalId), [selectedTerminalId]);
-  useEffect(() => persist(STORAGE_KEYS.pendingNotificationTarget, pendingNotificationTarget), [pendingNotificationTarget]);
+  useEffect(() => persist(key(STORAGE_KEYS.snapshot), snapshot), [snapshot]);
+  useEffect(() => persist(key(STORAGE_KEYS.selectedTerminalId), selectedTerminalId), [selectedTerminalId]);
+
+  // Header dot, tab badge, and Settings → Connection read this machine's state.
+  useEffect(() => {
+    onConnection({
+      service: snapshot?.service ?? null,
+      hermes: snapshot?.hermes ?? null,
+      running: snapshot ? snapshot.terminals.filter((terminal) => terminal.status === "running").length : null,
+    });
+  }, [snapshot, onConnection]);
 
   // Apply a notification route only after the live terminal snapshot confirms
   // the target still exists. Until then, keep the target persisted so a cold
-  // launch or mobile restore cannot drop the tap and fall back to another agent.
+  // launch or mobile restore cannot drop the tap and fall back to another
+  // agent. A fresh list without it means the agent is gone: drop the target.
   useEffect(() => {
     if (!pendingNotificationTarget || !snapshot) return;
     const target = terminals.find(
@@ -234,29 +519,19 @@ export function App() {
         terminal.id === pendingNotificationTarget.terminalId &&
         (!pendingNotificationTarget.workspace || terminal.workspace === pendingNotificationTarget.workspace),
     );
-    if (!target) return;
+    if (!target) {
+      if (terminalsLoaded.current && !snapshot.errors?.terminals) {
+        setSelectedTerminalId(null);
+        onNotificationHandled();
+      }
+      return;
+    }
     setSelectedTerminalId(target.id);
     setLaunchWorkspace(target.workspace);
     setTab("agents");
-    setPendingNotificationTarget(null);
+    onNotificationHandled();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pendingNotificationTarget, snapshot, terminals]);
-
-  // Deep-link from a notification: focus the agent it fired for. Covers both the
-  // cold open (the SW launched a new window at /?terminal=…&workspace=…) and a
-  // warm focus (the SW posts a message to the already-open app).
-  useEffect(() => {
-    const focusTerminal = (rawUrl: string) => {
-      const target = parseNotificationTarget(rawUrl);
-      if (target) queueNotificationTarget(target);
-    };
-    focusTerminal(window.location.href);
-    if (!("serviceWorker" in navigator)) return;
-    const onMessage = (event: MessageEvent) => {
-      if (event.data?.type === "athena-notification-click") focusTerminal(event.data.url);
-    };
-    navigator.serviceWorker.addEventListener("message", onMessage);
-    return () => navigator.serviceWorker.removeEventListener("message", onMessage);
-  }, []);
 
   // Raw keystrokes (typed chars, quick-keys, control codes) go straight to the
   // PTY and echo back through the live stream. Fire-and-forget: toggling a busy
@@ -284,7 +559,7 @@ export function App() {
 
   async function launchTerminal() {
     const task = launchTask.trim();
-    const workspace = launchWorkspaceResolved.trim().replace(/(.)\/+$/, "$1");
+    const workspace = normalizeFolderInput(launchWorkspaceResolved);
     // A task is optional now — a bare agent/shell can be spawned to type into live.
     if (!workspace) return;
     setBusy(true);
@@ -353,42 +628,26 @@ export function App() {
     }
   }
 
-  const backendHealthy = Boolean(snapshot?.service.backend.healthy);
-  const controlHealthy = Boolean(snapshot?.service.control.healthy);
   const banner = error ?? loadErrorMessage(snapshot);
+  const machineName = machine?.name ?? null;
+
+  // Settings belongs to App; keep this machine's state (and its polling) alive underneath.
+  if (tab === "settings") return null;
 
   return (
-    <div className="appShell">
-      <header className="topBar">
-        <div className="brand">
-          <img className="brandMark" src="/athena-icon-256.png" alt="Athena" width={30} height={30} />
-          <div>
-            <strong>Athena</strong>
-            <span>{config.mode === "live" ? "Live control" : "Demo mode"}</span>
-          </div>
-        </div>
-        <div className="topStatus">
-          <StatusDot label="API" online={backendHealthy} />
-          <StatusDot label="Ctrl" online={controlHealthy} />
-          <NotificationsButton />
-          <button className="iconButton" type="button" onClick={() => void refresh()} aria-label="Refresh">
-            <RefreshCw size={17} />
-          </button>
-        </div>
-      </header>
-
-      <UsageStrip client={client} />
-
+    <>
       {banner && <div className="errorBanner">{banner}</div>}
 
       <main className="content">
         {tab === "agents" && (
           <AgentsView
             client={client}
+            machineName={machineName}
             terminals={terminals}
             selected={selectedTerminal}
             streamUrl={selectedTerminal ? client.terminalStreamUrl(selectedTerminal.id) : null}
             view={agentView}
+            theme={theme}
             busy={busy}
             onSelect={setSelectedTerminalId}
             onViewChange={setAgentView}
@@ -401,6 +660,7 @@ export function App() {
 
         {tab === "launch" && (
           <LaunchView
+            machine={machine}
             kind={launchKind}
             task={launchTask}
             workspaces={workspaceOptions}
@@ -416,34 +676,30 @@ export function App() {
 
         {tab === "history" && (
           <HistoryView
+            machineName={machineName}
+            workspace={primaryWorkspace}
             sessions={snapshot?.recentSessions ?? []}
+            transcripts={client.historyTranscripts}
             busy={busy}
             onResume={resumeSession}
             onViewTranscript={openTranscript}
           />
         )}
-
-        {tab === "workspaces" && <WorkspacesView snapshot={snapshot} />}
       </main>
 
       {transcript && <TranscriptSheet view={transcript} onClose={() => setTranscript(null)} />}
-
-      <nav className="tabBar" aria-label="Sections">
-        <TabButton active={tab === "agents"} onClick={() => setTab("agents")} icon={<TerminalSquare size={18} />} label="Agents" badge={terminals.length} />
-        <TabButton active={tab === "launch"} onClick={() => setTab("launch")} icon={<Play size={18} />} label="Launch" />
-        <TabButton active={tab === "history"} onClick={() => setTab("history")} icon={<History size={18} />} label="History" />
-        <TabButton active={tab === "workspaces"} onClick={() => setTab("workspaces")} icon={<Layers size={18} />} label="Spaces" />
-      </nav>
-    </div>
+    </>
   );
 }
 
 function AgentsView({
   client,
+  machineName,
   terminals,
   selected,
   streamUrl,
   view,
+  theme,
   busy,
   onSelect,
   onViewChange,
@@ -453,10 +709,13 @@ function AgentsView({
   onGoLaunch,
 }: {
   client: AthenaClient;
+  /** Set when the agents run on another machine. */
+  machineName: string | null;
   terminals: EmbeddedTerminalSession[];
   selected: EmbeddedTerminalSession | null;
   streamUrl: string | null;
   view: AgentView;
+  theme: ThemeId;
   busy: boolean;
   onSelect: (id: string) => void;
   onViewChange: (view: AgentView) => void;
@@ -469,7 +728,7 @@ function AgentsView({
     return (
       <div className="emptyState">
         <Bot size={28} />
-        <strong>No live agents</strong>
+        <strong>No live agents{machineName ? ` on ${machineName}` : ""}</strong>
         <span>Launch an agent to control it from here.</span>
         <button className="primaryButton" type="button" onClick={onGoLaunch}>
           <Play size={16} /> Launch an agent
@@ -482,8 +741,8 @@ function AgentsView({
   // The dropdown follows the selected terminal's workspace; switching it jumps
   // to that workspace's first terminal so the view below always stays in sync.
   const activeGroup = groups.find((group) => group.path === selected?.workspace) ?? groups[0];
-  const transcript = selected ? transcriptRefFor(selected) : null;
-  const showChat = view === "chat" && transcript !== null;
+  const hasConversation = selected !== null && selected.kind !== "shell" && Boolean(selected.providerSessionId);
+  const showChat = view === "chat" && hasConversation;
   const changeWorkspace = (path: string) => {
     const next = groups.find((group) => group.path === path);
     if (next?.terminals[0]) onSelect(next.terminals[0].id);
@@ -520,7 +779,7 @@ function AgentsView({
               <span className={`providerDot ${terminal.kind}`} />
               <span className="sessionChipText">
                 <strong>{terminal.title}</strong>
-                <small>{terminal.kind}</small>
+                <small>{labelForKind(terminal.kind)}</small>
               </span>
             </button>
           ))}
@@ -532,10 +791,10 @@ function AgentsView({
           <div className="terminalCardHead">
             <div className="terminalCardTitle">
               <strong>{selected.title}</strong>
-              <small>{selected.kind} · pid {selected.pid ?? "n/a"} · {selected.status}</small>
+              <small>{labelForKind(selected.kind)} · {selected.status === "running" ? "running" : selected.status}{selected.pid ? ` · pid ${selected.pid}` : ""}</small>
             </div>
             <div className="terminalCardActions">
-              {transcript && (
+              {hasConversation && (
                 <div className="viewToggle" role="group" aria-label="Agent view">
                   <button
                     type="button"
@@ -563,10 +822,10 @@ function AgentsView({
             </div>
           </div>
 
-          {showChat && transcript ? (
-            <ConversationView key={selected.id} client={client} transcript={transcript} onSend={onSend} />
+          {showChat ? (
+            <ConversationView key={selected.id} client={client} terminal={selected} onSend={onSend} />
           ) : (
-            <MobileTerminal key={selected.id} sessionId={selected.id} streamUrl={streamUrl} onInput={onRaw} />
+            <MobileTerminal key={selected.id} sessionId={selected.id} streamUrl={streamUrl} onInput={onRaw} theme={theme} />
           )}
 
           <QuickKeys onRaw={onRaw} />
@@ -574,13 +833,6 @@ function AgentsView({
       )}
     </section>
   );
-}
-
-// Agent terminals that Athena has linked to their native session can show the
-// conversation; shells and not-yet-linked panes only have the terminal.
-function transcriptRefFor(terminal: EmbeddedTerminalSession): TranscriptRef | null {
-  if (terminal.kind === "shell" || !terminal.providerSessionId) return null;
-  return { provider: terminal.kind, id: terminal.providerSessionId };
 }
 
 // Keys absent from mobile soft keyboards but essential for agent TUIs. Sequences
@@ -610,6 +862,7 @@ function QuickKeys({ onRaw }: { onRaw: (data: string) => void }) {
 }
 
 function LaunchView({
+  machine,
   kind,
   task,
   workspaces,
@@ -621,6 +874,7 @@ function LaunchView({
   onWorkspaceChange,
   onLaunch,
 }: {
+  machine: MachineRef | null;
   kind: EmbeddedTerminalKind;
   task: string;
   workspaces: string[];
@@ -632,10 +886,11 @@ function LaunchView({
   onWorkspaceChange: (value: string) => void;
   onLaunch: () => void;
 }) {
+  const recentLabel = machine ? "folders open in Athena there" : "recent projects";
   return (
     <section className="panel">
       <header className="panelHead">
-        <span className="eyebrow">New terminal</span>
+        <span className="eyebrow">{machine ? `New terminal on ${machine.name}` : "New terminal"}</span>
         <h1>Launch an agent</h1>
       </header>
 
@@ -655,12 +910,12 @@ function LaunchView({
 
       <div className="field">
         <span>Workspace</span>
-        {/* Any folder on the laptop; picking a project below fills it in. */}
+        {/* Any folder on that machine; picking a project below fills it in. */}
         <input
           className="pathInput"
           value={selectedWorkspace}
           onChange={(event) => onWorkspaceChange(event.target.value)}
-          placeholder="/home/alan/home_ai/projects/…"
+          placeholder={folderPlaceholder(machine)}
           aria-label="Workspace folder"
           autoCapitalize="off"
           autoCorrect="off"
@@ -668,9 +923,9 @@ function LaunchView({
           spellCheck={false}
         />
         {recentState.loading ? (
-          <p className="emptyText">Loading recent projects…</p>
+          <p className="emptyText">Loading {recentLabel}…</p>
         ) : recentState.error ? (
-          <p className="emptyText">Couldn't load recent projects ({recentState.error}).</p>
+          <p className="emptyText">Couldn't load {recentLabel} ({recentState.error}).</p>
         ) : null}
         {workspaces.length > 0 && (
           <div className="workspacePicker">
@@ -703,52 +958,27 @@ function LaunchView({
       </label>
 
       <button className="primaryButton wide" type="button" onClick={onLaunch} disabled={busy || !selectedWorkspace.trim()}>
-        <Plus size={17} /> Launch {labelForKind(kind)}
+        <Plus size={17} /> Launch {labelForKind(kind)}{machine ? ` on ${machine.name}` : ""}
       </button>
     </section>
   );
 }
 
-function WorkspacesView({ snapshot }: { snapshot: MobileSnapshot | null }) {
-  const service = snapshot?.service;
-  return (
-    <section className="panel">
-      <header className="panelHead">
-        <span className="eyebrow">Connection</span>
-        <h1>Workspaces</h1>
-      </header>
-
-      <div className="metrics">
-        <Metric label="Backend" value={service?.backend.healthy ? "Healthy" : "Offline"} detail={service?.backend.baseUrl ?? "No URL"} />
-        <Metric label="Control" value={service?.control.healthy ? "Healthy" : "Offline"} detail={service?.control.baseUrl ?? "No URL"} />
-        <Metric label="Agents" value={String(snapshot?.terminals.length ?? 0)} detail="Live terminals" />
-        <Metric label="Hermes" value={snapshot?.hermes?.installed ? "Ready" : "Unknown"} detail={snapshot?.hermes?.version ?? "Not loaded"} />
-      </div>
-
-      <div className="listSection">
-        <span className="eyebrow">Active projects</span>
-        {(snapshot?.workspaces ?? []).map((workspace) => (
-          <div className="listRow" key={workspace.path}>
-            <strong>{workspace.name}</strong>
-            <small>{workspace.liveTerminals} live · {workspace.recentSessions} recent</small>
-            <code>{workspace.path}</code>
-          </div>
-        ))}
-        {snapshot && snapshot.workspaces.length === 0 && (
-          <p className="emptyText">No workspaces returned by the configured API.</p>
-        )}
-      </div>
-    </section>
-  );
-}
-
 function HistoryView({
+  machineName,
+  workspace,
   sessions,
+  transcripts,
   busy,
   onResume,
   onViewTranscript,
 }: {
+  machineName: string | null;
+  /** The folder whose sessions are listed: the selected agent's. */
+  workspace: string;
   sessions: AgentSession[];
+  /** Past transcripts can be opened here (the laptop's only, for now). */
+  transcripts: boolean;
   busy: boolean;
   onResume: (session: AgentSession) => void;
   onViewTranscript: (session: AgentSession) => void;
@@ -757,8 +987,8 @@ function HistoryView({
     return (
       <div className="emptyState">
         <History size={28} />
-        <strong>No recent sessions</strong>
-        <span>Native Codex, Claude, OpenCode, Athena Code, Grok, and Hermes sessions for this workspace appear here.</span>
+        <strong>No recent sessions{workspace ? ` in ${workspaceName(workspace)}` : ""}</strong>
+        <span>Native Codex, Claude, OpenCode, Athena Code, Grok, and Hermes sessions for this workspace{machineName ? ` on ${machineName}` : ""} appear here.</span>
       </div>
     );
   }
@@ -766,8 +996,8 @@ function HistoryView({
   return (
     <section className="panel">
       <header className="panelHead">
-        <span className="eyebrow">Native history</span>
-        <h1>Sessions</h1>
+        <span className="eyebrow">Native history{machineName ? ` · ${machineName}` : ""}</span>
+        <h1>{workspace ? workspaceName(workspace) : "Sessions"}</h1>
       </header>
 
       <div className="historyList">
@@ -781,9 +1011,11 @@ function HistoryView({
               </div>
             </div>
             <div className="historyActions">
-              <button className="ghostButton" type="button" onClick={() => onViewTranscript(session)}>
-                <FileText size={15} /> Transcript
-              </button>
+              {transcripts && (
+                <button className="ghostButton" type="button" onClick={() => onViewTranscript(session)}>
+                  <FileText size={15} /> Transcript
+                </button>
+              )}
               <button className="primaryButton" type="button" onClick={() => onResume(session)} disabled={busy}>
                 <RotateCcw size={15} /> Resume
               </button>
@@ -844,96 +1076,6 @@ function TabButton({
   );
 }
 
-function StatusDot({ label, online }: { label: string; online: boolean }) {
-  return (
-    <span className={online ? "statusDot online" : "statusDot"}>
-      <i />
-      {label}
-    </span>
-  );
-}
-
-// Header control for agent-attention push. Reflects the live permission/
-// subscription state: tap to enroll when off, tap to fire a test ping when on.
-// Disabled (with an explanatory tooltip) where push can't work — an insecure
-// origin or a browser without the Push API.
-function NotificationsButton() {
-  const [state, setState] = useState<PushState | "loading">("loading");
-  const [pending, setPending] = useState(false);
-  const [lastError, setLastError] = useState<string | null>(null);
-
-  useEffect(() => {
-    let active = true;
-    void pushState().then((next) => {
-      if (active) setState(next);
-    });
-    return () => {
-      active = false;
-    };
-  }, []);
-
-  const ready = state === "granted";
-  const enrollable = state === "default";
-  const blocked = state === "denied" || state === "insecure" || state === "unsupported";
-
-  const baseTitle = ready
-    ? "Notifications on — tap to send a test"
-    : enrollable
-      ? "Enable agent-attention notifications"
-      : state === "insecure"
-        ? "Open the app over HTTPS (tailscale serve) to enable notifications"
-        : state === "denied"
-          ? "Notifications blocked — allow them in browser settings"
-          : state === "unsupported"
-            ? "This browser does not support Web Push"
-            : "Notifications";
-  const title = lastError ? `${baseTitle}. Last error: ${lastError}` : baseTitle;
-
-  const onClick = async () => {
-    if (pending || state === "loading" || blocked) return;
-    setPending(true);
-    setLastError(null);
-    try {
-      if (ready) {
-        await sendTestPush();
-      } else {
-        const result = await enablePush();
-        setState(result.state);
-        if (!result.ok && result.error) setLastError(result.error);
-      }
-    } catch (pushError) {
-      setLastError(messageOf(pushError));
-      void pushState().then(setState).catch(() => {});
-    } finally {
-      setPending(false);
-    }
-  };
-
-  const Icon = ready ? BellRing : blocked ? BellOff : Bell;
-  return (
-    <button
-      className={ready ? "iconButton notifyOn" : "iconButton"}
-      type="button"
-      onClick={() => void onClick()}
-      disabled={pending || state === "loading" || blocked}
-      aria-label={title}
-      title={title}
-    >
-      <Icon size={17} />
-    </button>
-  );
-}
-
-function Metric({ label, value, detail }: { label: string; value: string; detail: string }) {
-  return (
-    <div className="metric">
-      <span>{label}</span>
-      <strong>{value}</strong>
-      <small>{detail}</small>
-    </div>
-  );
-}
-
 // Names the desktop app uses where plain capitalization would be wrong.
 const KIND_LABELS: Record<string, string> = { athena: "Athena Code", opencode: "OpenCode" };
 
@@ -942,7 +1084,19 @@ function labelForKind(kind: string): string {
 }
 
 function workspaceName(path: string): string {
-  return path.split("/").filter(Boolean).at(-1) || path;
+  return pathBaseName(path);
+}
+
+function folderPlaceholder(machine: MachineRef | null): string {
+  if (!machine) return "/home/alan/home_ai/projects/…";
+  if (isWindowsMachine(machine)) return `${machine.homedir ?? "C:\\Users\\you"}\\…`;
+  return `${machine.homedir ?? "~"}/…`;
+}
+
+// "workspaces" was the Spaces tab, folded into Settings.
+function parseTab(value: string): Tab {
+  if (value === "agents" || value === "launch" || value === "history" || value === "settings") return value;
+  return value === "workspaces" ? "settings" : "agents";
 }
 
 type TerminalGroup = { path: string; name: string; terminals: EmbeddedTerminalSession[] };
@@ -1002,6 +1156,13 @@ function loadErrorMessage(snapshot: MobileSnapshot | null): string | null {
   return failures.length ? `Couldn't refresh ${failures.join(", ")}.` : null;
 }
 
+function clearNotificationQuery(): void {
+  const url = new URL(window.location.href);
+  if (!["terminal", "workspace", "view"].some((key) => url.searchParams.has(key))) return;
+  for (const key of ["terminal", "workspace", "view"]) url.searchParams.delete(key);
+  window.history.replaceState(window.history.state, "", `${url.pathname}${url.search}${url.hash}`);
+}
+
 function parseNotificationTarget(rawUrl: string): NotificationTarget | null {
   try {
     const params = new URL(rawUrl, window.location.origin).searchParams;
@@ -1019,6 +1180,9 @@ function parseNotificationTarget(rawUrl: string): NotificationTarget | null {
 // backgrounded PWA, not just an in-tab reload.
 const STORAGE_KEYS = {
   tab: "athena.tab",
+  machines: "athena.machines",
+  machineId: "athena.machineId",
+  machineName: "athena.machineName",
   launchedWorkspaces: "athena.launchedWorkspaces",
   recentWorkspaces: "athena.recentWorkspaces",
   agentView: "athena.agentView",
