@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createPushNotifier } from "./push-notifier.mjs";
+import { createRemoteMachines } from "./remote-machines.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const rootDir = path.resolve(__dirname, "..");
@@ -12,6 +13,7 @@ const distDir = path.join(rootDir, "dist");
 const host = resolveHost();
 const port = Number(process.env.PORT || process.env.ATHENA_MOBILE_PORT || 4174);
 const notifier = createPushNotifier();
+const remoteMachines = createRemoteMachines();
 
 if (!fs.existsSync(path.join(distDir, "index.html"))) {
   console.error("Missing dist/index.html. Run `npm run build` before `npm start`.");
@@ -25,6 +27,13 @@ const server = http.createServer((req, res) => {
   }
   if (req.url.startsWith("/athena-control")) {
     return proxyRequest(req, res, "/athena-control", targetFromDiscovery("electron-control.json", "ATHENA_CONTROL_TARGET", "http://127.0.0.1:9000"));
+  }
+  if (req.url.startsWith("/athena-remote/")) {
+    req.url = req.url.slice("/athena-remote".length);
+    return remoteMachines.middleware(req, res).catch(() => {
+      if (!res.headersSent) sendText(res, 500, "Remote gateway error");
+      else res.destroy();
+    });
   }
   if (req.url.startsWith("/athena-push")) {
     req.url = req.url.slice("/athena-push".length) || "/";

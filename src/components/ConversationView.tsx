@@ -1,13 +1,12 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Send, Wrench } from "lucide-react";
 import type { AthenaClient } from "../api/athenaClient";
-import { parseTranscript, type TranscriptMessage } from "../transcript";
-import type { TranscriptRef } from "../types";
+import type { ConversationMessage, EmbeddedTerminalSession } from "../types";
 
 type Props = {
   client: AthenaClient;
-  /** The live terminal's native session. */
-  transcript: TranscriptRef;
+  /** The live agent terminal, linked to its native session. */
+  terminal: EmbeddedTerminalSession;
   /** Submits a whole message to the agent; rejects if it wasn't delivered. */
   onSend: (text: string) => Promise<void>;
 };
@@ -20,8 +19,8 @@ const COLLAPSE_CHARS = 900;
 // How close to the bottom still counts as "following" new messages.
 const STICKY_PX = 80;
 
-export function ConversationView({ client, transcript, onSend }: Props) {
-  const [messages, setMessages] = useState<TranscriptMessage[] | null>(null);
+export function ConversationView({ client, terminal, onSend }: Props) {
+  const [messages, setMessages] = useState<ConversationMessage[] | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [draft, setDraft] = useState("");
   const [sending, setSending] = useState(false);
@@ -45,20 +44,17 @@ export function ConversationView({ client, transcript, onSend }: Props) {
       inFlight = true;
       window.clearTimeout(timer);
       try {
-        const text = await client.sessionTranscript(transcript);
+        const next = await client.conversation(terminal);
         if (cancelled) return;
+        const text = JSON.stringify(next);
         if (text !== lastText) {
           lastText = text;
-          setMessages(parseTranscript(text));
+          setMessages(next);
         }
         setLoadError(null);
       } catch (error) {
         if (cancelled) return;
-        const message = error instanceof Error ? error.message : String(error);
-        // A session's log file appears with its first message; until then the
-        // backend answers 404, which just means there is nothing to show yet.
-        if (message.startsWith("404")) setMessages((current) => current ?? []);
-        else setLoadError(message);
+        setLoadError(error instanceof Error ? error.message : String(error));
       } finally {
         inFlight = false;
         if (!cancelled && document.visibilityState === "visible") timer = window.setTimeout(load, POLL_MS);
@@ -77,9 +73,9 @@ export function ConversationView({ client, transcript, onSend }: Props) {
       window.clearTimeout(timer);
       document.removeEventListener("visibilitychange", onVisibility);
     };
-    // `transcript` is a fresh object each render; its fields identify the session.
+    // `terminal` is a fresh object each poll; these fields identify the session.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [client, transcript.provider, transcript.id]);
+  }, [client, terminal.id, terminal.kind, terminal.providerSessionId]);
 
   // Keep the newest message in view unless the user has scrolled up to read.
   useLayoutEffect(() => {
@@ -181,7 +177,7 @@ export function ConversationView({ client, transcript, onSend }: Props) {
 
 // Keys from each message's role and opening text, so they stay stable while
 // the latest reply grows or older messages scroll out of the transcript tail.
-function messageKeys(messages: TranscriptMessage[]): string[] {
+function messageKeys(messages: ConversationMessage[]): string[] {
   const seen = new Map<string, number>();
   return messages.map((message) => {
     const base = `${message.role}:${message.text.slice(0, 64)}`;

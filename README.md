@@ -9,6 +9,8 @@ laptop and opened from the phone over Tailscale, that lets you:
 - browse native session history, read transcripts, and resume a session in a new terminal
 - get Web Push notifications when an agent is waiting on an answer, finishes a long turn, or crashes
 - see how much of each Claude and Codex subscription window is used, per signed-in account
+- switch to another computer running Athena on your tailnet and do all of the above there
+- match desktop Athena's look, with the same 13 themes, or follow the laptop's theme
 
 It talks to Athena only through Athena's existing HTTP APIs: the FastAPI backend
 and the Electron control server, both localhost-only. It has no shared code with
@@ -77,6 +79,35 @@ In live mode, blank URLs use the same-origin Vite proxy. The proxy reads Athena'
 
 This lets a phone reach the mobile app over Tailscale while the app server talks to Athena's localhost-only backend/control services.
 
+## Other machines
+
+Desktop Athena can drive another computer's Athena over Tailscale (Settings →
+System → Remote access, port 47821). The phone does the same through the
+laptop: tap the machine name in the header to pick one. The laptop
+
+- finds the other desktops with `tailscale status --json` and asks each one's
+  Athena who it is (`GET /machine`), as desktop Athena's machine switcher does;
+- forwards the phone's requests for the chosen machine to its control API
+  (`/athena-remote/m/<tailscale node id>/…`), only ever to a machine Tailscale
+  lists as a peer;
+- adds that machine's access token when desktop Athena on the laptop has one
+  saved (`remote-tokens.json` in its settings folder). Tokens never reach the
+  phone.
+
+A machine signed in to your Tailscale account needs no token while its "Trust
+my own devices" setting is on. Any other machine needs its token pasted into
+Athena on the laptop (Settings → System → Your machines) first.
+
+On another machine you get its terminals (watch, type, stop), launches, and its
+session history with resume. The conversation view needs that machine's Athena
+to include remote chat (newer than 0.4.1); until then use the terminal view.
+Past transcripts, Hermes status, and push alerts stay laptop-only for now.
+Subscription usage always describes the laptop's accounts.
+
+Overrides: `ATHENA_REMOTE_PORT` if the machines use a different remote port,
+`ATHENA_USER_DATA` if desktop Athena's settings folder isn't the default
+(`~/.config/context-workspace-client` on Linux).
+
 ## Notifications
 
 The server watches every live terminal's output and alerts on timing, since an
@@ -95,9 +126,11 @@ the timing tests with `npm test`.
 
 ## Subscription usage
 
-The strip under the header shows one chip per Claude or Codex account signed in
-on the laptop, with how much of its tightest window is used. Tap a chip for the
-plan, every quota window with its reset countdown, and a manual refresh.
+The pill in the header shows the highest quota use across the Claude and Codex
+accounts signed in on the laptop; a red dot means one of them needs attention
+(an expired sign-in, for example). Tap it for the details sheet: the plan,
+every quota window with its reset countdown, and a manual refresh, with a tab
+per account. Settings lists every account with its bars.
 
 The laptop's Athena backend owns the provider logins and a shared cache
 (`GET /usage/accounts`, `POST /usage/refresh`, reached through
@@ -105,8 +138,16 @@ The laptop's Athena backend owns the provider logins and a shared cache
 Polling the cache is cheap: every 60 s, every 3 s while a refresh is running,
 and paused while the app is in the background. A dashed chip with hatched bars
 is a last-known value, not a live reading. That covers an expired sign-in, a
-failed refresh, or a laptop that stopped answering. The strip stays hidden when
+failed refresh, or a laptop that stopped answering. The pill stays hidden when
 the running Athena build predates usage monitoring.
+
+## Themes
+
+`src/styles/tokens.css` and `src/styles/themes.css` are copies of desktop
+Athena's design tokens and themes (`context-workspace` `client/src/styles/`);
+re-copy them when the desktop's change, and keep `src/themes.ts` in sync (a
+test checks the ids). The default, "Match laptop", follows the theme set in
+desktop Athena on the laptop.
 
 ## First release package
 
@@ -123,6 +164,7 @@ and mounts the same local endpoints used in development:
 
 - `/athena-backend` proxies to Athena backend discovery from `~/.context-workspace/backend.json`.
 - `/athena-control` proxies to Electron control discovery from `~/.context-workspace/electron-control.json`.
+- `/athena-remote` lists other machines on the tailnet and forwards to their Athena (see "Other machines").
 - `/athena-push` handles Web Push enrollment and notifications.
 
 Expose it privately with Tailscale HTTPS:

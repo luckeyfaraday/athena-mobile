@@ -6,6 +6,7 @@ import https from "node:https";
 import os from "node:os";
 import path from "node:path";
 import { athenaPushPlugin } from "./server/push-plugin.mjs";
+import { createRemoteMachines } from "./server/remote-machines.mjs";
 
 export default defineConfig({
   plugins: [react(), athenaProxyPlugin(), athenaPushPlugin()],
@@ -23,7 +24,15 @@ export default defineConfig({
 // every launch, so each request re-reads discovery instead of fixing the target
 // at startup — otherwise restarting Athena strands the dev server on a dead port.
 function athenaProxyPlugin() {
+  const remoteMachines = createRemoteMachines();
   const mount = (middlewares: Connect.Server) => {
+    // Other machines' Athena over Tailscale; see server/remote-machines.mjs.
+    middlewares.use("/athena-remote", (req, res) => {
+      remoteMachines.middleware(req, res).catch(() => {
+        if (!res.headersSent) res.writeHead(500).end();
+        else res.destroy();
+      });
+    });
     middlewares.use("/athena-backend", (req, res) => {
       proxyAthenaRequest(req, res, "backend.json", process.env.ATHENA_BACKEND_TARGET, "http://127.0.0.1:8000");
     });

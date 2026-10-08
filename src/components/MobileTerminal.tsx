@@ -12,6 +12,8 @@ type Props = {
   sessionId: string;
   /** Raw keystroke bytes from xterm (Enter, arrows, control codes), sent to the PTY verbatim. */
   onInput: (data: string) => void;
+  /** The painted theme; a change recolors the open terminal. */
+  theme: string;
 };
 
 // The control server spawns PTYs at 96 columns and the agent TUIs (Claude Code,
@@ -23,8 +25,11 @@ const TERMINAL_COLS = 96;
 const FONT_SIZE = 11;
 const LINE_HEIGHT = 1.2;
 const MONO_FONT = "ui-monospace, 'SF Mono', Menlo, Consolas, monospace";
+// Backoff for reopening a stream the browser gave up on.
+const RETRY_MIN_MS = 2_000;
+const RETRY_MAX_MS = 30_000;
 
-export function MobileTerminal({ streamUrl, sessionId, onInput }: Props) {
+export function MobileTerminal({ streamUrl, sessionId, onInput, theme }: Props) {
   const mountRef = useRef<HTMLDivElement | null>(null);
   const terminalRef = useRef<Terminal | null>(null);
   // Hold the latest onInput so the data handler isn't baked into the mount effect
@@ -120,22 +125,26 @@ export function MobileTerminal({ streamUrl, sessionId, onInput }: Props) {
     // reconnect replays a buffer snapshot, so the screen resyncs cleanly.
     let source: EventSource | null = null;
     let exited = false;
+    let retryTimer: number | undefined;
+    let retryDelay = RETRY_MIN_MS;
     const connect = () => {
       if (!streamUrl || source || exited) return;
       setState("connecting");
-      source = new EventSource(streamUrl);
+      const current = new EventSource(streamUrl);
+      source = current;
       // Each (re)connection begins with a snapshot of the current buffer; reset
       // first so an auto-reconnect re-syncs the screen instead of duplicating it.
-      source.addEventListener("snapshot", (event) => {
+      current.addEventListener("snapshot", (event) => {
         terminal.reset();
         const bytes = base64ToBytes((event as MessageEvent<string>).data);
         if (bytes.length) terminal.write(bytes);
+        retryDelay = RETRY_MIN_MS;
         setState("live");
       });
-      source.addEventListener("data", (event) => {
+      current.addEventListener("data", (event) => {
         terminal.write(base64ToBytes((event as MessageEvent<string>).data));
       });
-      source.addEventListener("exit", (event) => {
+      current.addEventListener("exit", (event) => {
         const exitCode = parseExitCode((event as MessageEvent<string>).data);
         terminal.writeln(`\r\n\x1b[33m[process exited: ${exitCode ?? "unknown"}]\x1b[0m`);
         exited = true;
@@ -143,12 +152,21 @@ export function MobileTerminal({ streamUrl, sessionId, onInput }: Props) {
         source?.close();
         source = null;
       });
-      // EventSource auto-reconnects on transient errors; only flag the UI.
-      source.addEventListener("error", () => {
-        setState((current) => (current === "exited" ? current : "error"));
+      // EventSource reconnects by itself after a dropped connection, but an
+      // error answer (another machine still unreachable, say) closes it for
+      // good. Reopen that one ourselves, backing off while it keeps failing.
+      current.addEventListener("error", () => {
+        setState((state) => (state === "exited" ? state : "error"));
+        if (current.readyState !== EventSource.CLOSED || source !== current) return;
+        source = null;
+        if (exited || document.visibilityState !== "visible") return;
+        window.clearTimeout(retryTimer);
+        retryTimer = window.setTimeout(connect, retryDelay);
+        retryDelay = Math.min(retryDelay * 2, RETRY_MAX_MS);
       });
     };
     const disconnect = () => {
+      window.clearTimeout(retryTimer);
       source?.close();
       source = null;
     };
@@ -180,6 +198,12 @@ export function MobileTerminal({ streamUrl, sessionId, onInput }: Props) {
   // Tapping the terminal focuses xterm's hidden textarea, which raises the mobile
   // soft keyboard so typed characters reach the PTY.
   const focusTerminal = () => terminalRef.current?.focus();
+
+
+  // App repaints the document in a layout effect, so the new tokens are in place here.
+  useEffect(() => {
+    if (terminalRef.current) terminalRef.current.options.theme = readTerminalTheme();
+  }, [theme]);
 
   return (
     <div className="mobileTerminal">
@@ -217,13 +241,32 @@ function base64ToBytes(payloadBase64: string): Uint8Array {
   return bytes;
 }
 
+// The theme's terminal tokens, the same ones desktop Athena gives its xterm.
 function readTerminalTheme(): ITheme {
   const root = getComputedStyle(document.documentElement);
   const value = (name: string, fallback: string) => root.getPropertyValue(name).trim() || fallback;
+  const ansi = (name: string) => root.getPropertyValue(`--ansi-${name}`).trim() || undefined;
   return {
     background: value("--terminal", "#000000"),
     foreground: value("--text", "#f5f5f5"),
     cursor: value("--accent", "#fafafa"),
-    selectionBackground: "rgba(250, 250, 250, 0.24)",
+    cursorAccent: value("--terminal", "#000000"),
+    selectionBackground: root.colorScheme === "light" ? "rgba(0, 0, 0, 0.18)" : "rgba(250, 250, 250, 0.24)",
+    black: ansi("black"),
+    red: ansi("red"),
+    green: ansi("green"),
+    yellow: ansi("yellow"),
+    blue: ansi("blue"),
+    magenta: ansi("magenta"),
+    cyan: ansi("cyan"),
+    white: ansi("white"),
+    brightBlack: ansi("bright-black"),
+    brightRed: ansi("bright-red"),
+    brightGreen: ansi("bright-green"),
+    brightYellow: ansi("bright-yellow"),
+    brightBlue: ansi("bright-blue"),
+    brightMagenta: ansi("bright-magenta"),
+    brightCyan: ansi("bright-cyan"),
+    brightWhite: ansi("bright-white"),
   };
 }

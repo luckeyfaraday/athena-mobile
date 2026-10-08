@@ -23,7 +23,7 @@ const DEV = new URL(self.location.href).searchParams.get("dev") === "1";
 // Requests routed to Athena's backend/control/push servers (and the live SSE
 // stream) must always go to the network — caching them would serve stale agent
 // state.
-const PASS_THROUGH = ["/athena-backend", "/athena-control", "/athena-push"];
+const PASS_THROUGH = ["/athena-backend", "/athena-control", "/athena-remote", "/athena-push"];
 
 self.addEventListener("install", (event) => {
   // Activate this worker as soon as it finishes installing, without waiting for

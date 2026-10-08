@@ -6,6 +6,8 @@ export type AppConfig = {
   mode: AthenaMode;
   backendUrl: string;
   controlUrl: string;
+  /** The laptop's gateway to other machines' Athena (server/remote-machines.mjs). */
+  remoteUrl: string;
   projectDir: string;
   token: string;
 };
@@ -18,6 +20,7 @@ export function readConfig(): AppConfig {
     mode,
     backendUrl: trimSlash(import.meta.env.VITE_ATHENA_BACKEND_URL || (mode === "live" ? "/athena-backend" : "")),
     controlUrl: trimSlash(import.meta.env.VITE_ATHENA_CONTROL_URL || (mode === "live" ? "/athena-control" : "")),
+    remoteUrl: trimSlash(import.meta.env.VITE_ATHENA_REMOTE_URL || (mode === "live" ? "/athena-remote" : "")),
     projectDir: import.meta.env.VITE_ATHENA_PROJECT_DIR || "",
     token: import.meta.env.VITE_ATHENA_TOKEN || "",
   };
