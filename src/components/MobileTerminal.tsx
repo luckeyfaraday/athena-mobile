@@ -25,6 +25,9 @@ const TERMINAL_COLS = 96;
 const FONT_SIZE = 11;
 const LINE_HEIGHT = 1.2;
 const MONO_FONT = "ui-monospace, 'SF Mono', Menlo, Consolas, monospace";
+// Backoff for reopening a stream the browser gave up on.
+const RETRY_MIN_MS = 2_000;
+const RETRY_MAX_MS = 30_000;
 
 export function MobileTerminal({ streamUrl, sessionId, onInput, theme }: Props) {
   const mountRef = useRef<HTMLDivElement | null>(null);
@@ -122,22 +125,26 @@ export function MobileTerminal({ streamUrl, sessionId, onInput, theme }: Props) 
     // reconnect replays a buffer snapshot, so the screen resyncs cleanly.
     let source: EventSource | null = null;
     let exited = false;
+    let retryTimer: number | undefined;
+    let retryDelay = RETRY_MIN_MS;
     const connect = () => {
       if (!streamUrl || source || exited) return;
       setState("connecting");
-      source = new EventSource(streamUrl);
+      const current = new EventSource(streamUrl);
+      source = current;
       // Each (re)connection begins with a snapshot of the current buffer; reset
       // first so an auto-reconnect re-syncs the screen instead of duplicating it.
-      source.addEventListener("snapshot", (event) => {
+      current.addEventListener("snapshot", (event) => {
         terminal.reset();
         const bytes = base64ToBytes((event as MessageEvent<string>).data);
         if (bytes.length) terminal.write(bytes);
+        retryDelay = RETRY_MIN_MS;
         setState("live");
       });
-      source.addEventListener("data", (event) => {
+      current.addEventListener("data", (event) => {
         terminal.write(base64ToBytes((event as MessageEvent<string>).data));
       });
-      source.addEventListener("exit", (event) => {
+      current.addEventListener("exit", (event) => {
         const exitCode = parseExitCode((event as MessageEvent<string>).data);
         terminal.writeln(`\r\n\x1b[33m[process exited: ${exitCode ?? "unknown"}]\x1b[0m`);
         exited = true;
@@ -145,12 +152,21 @@ export function MobileTerminal({ streamUrl, sessionId, onInput, theme }: Props) 
         source?.close();
         source = null;
       });
-      // EventSource auto-reconnects on transient errors; only flag the UI.
-      source.addEventListener("error", () => {
-        setState((current) => (current === "exited" ? current : "error"));
+      // EventSource reconnects by itself after a dropped connection, but an
+      // error answer (another machine still unreachable, say) closes it for
+      // good. Reopen that one ourselves, backing off while it keeps failing.
+      current.addEventListener("error", () => {
+        setState((state) => (state === "exited" ? state : "error"));
+        if (current.readyState !== EventSource.CLOSED || source !== current) return;
+        source = null;
+        if (exited || document.visibilityState !== "visible") return;
+        window.clearTimeout(retryTimer);
+        retryTimer = window.setTimeout(connect, retryDelay);
+        retryDelay = Math.min(retryDelay * 2, RETRY_MAX_MS);
       });
     };
     const disconnect = () => {
+      window.clearTimeout(retryTimer);
       source?.close();
       source = null;
     };

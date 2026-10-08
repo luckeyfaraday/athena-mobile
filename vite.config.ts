@@ -28,7 +28,10 @@ function athenaProxyPlugin() {
   const mount = (middlewares: Connect.Server) => {
     // Other machines' Athena over Tailscale; see server/remote-machines.mjs.
     middlewares.use("/athena-remote", (req, res) => {
-      void remoteMachines.middleware(req, res);
+      remoteMachines.middleware(req, res).catch(() => {
+        if (!res.headersSent) res.writeHead(500).end();
+        else res.destroy();
+      });
     });
     middlewares.use("/athena-backend", (req, res) => {
       proxyAthenaRequest(req, res, "backend.json", process.env.ATHENA_BACKEND_TARGET, "http://127.0.0.1:8000");

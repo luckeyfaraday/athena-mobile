@@ -97,9 +97,14 @@ export function createRemoteMachines(options = {}) {
   }
 
   async function middleware(req, res) {
-    const url = new URL(req.url || "/", "http://athena-mobile.local");
     // Another site open in the phone's browser must not drive these machines.
     if (!sameOrigin(req)) return sendJson(res, 403, { error: "Cross-site requests are refused." });
+    let url;
+    try {
+      url = new URL(req.url || "/", "http://athena-mobile.local");
+    } catch {
+      return sendJson(res, 400, { error: "Bad request." });
+    }
     try {
       if (url.pathname === "/machines" && req.method === "GET") {
         const state = await machines(url.searchParams.get("fresh") === "1");

@@ -357,8 +357,11 @@ function MachineConsole({
   const [error, setError] = useState<string | null>(null);
   const [transcript, setTranscript] = useState<TranscriptView | null>(null);
   const refreshInFlight = useRef(false);
-  // Set once this session has loaded the live terminal list (not a saved copy).
-  const terminalsLoaded = useRef(false);
+  // When the newest live terminal list was requested (0: only a saved copy so
+  // far), and when the pending notification target arrived. A target is only
+  // dropped by a list requested after it arrived.
+  const terminalsRequestedAt = useRef(0);
+  const targetArrivedAt = useRef(Date.now());
   const refreshQueued = useRef(false);
 
   const terminals = snapshot?.terminals ?? [];
@@ -407,9 +410,10 @@ function MachineConsole({
     }
     refreshInFlight.current = true;
     setError(null);
+    const requestedAt = Date.now();
     try {
       const next = await clientRef.current.snapshot(primaryWorkspaceRef.current || undefined);
-      if (!next.errors?.terminals) terminalsLoaded.current = true;
+      if (!next.errors?.terminals) terminalsRequestedAt.current = requestedAt;
       setSnapshot((previous) => keepLastLoaded(previous, next));
       setSelectedTerminalId((current) => current ?? next.terminals[0]?.id ?? null);
     } catch (refreshError) {
@@ -426,6 +430,8 @@ function MachineConsole({
   // A notification tapped while the app was open: follow it to its workspace.
   useEffect(() => {
     if (!notificationTarget) return;
+    // The list on screen may predate the agent the alert is about.
+    targetArrivedAt.current = Date.now();
     if (notificationTarget.workspace) {
       primaryWorkspaceRef.current = notificationTarget.workspace;
       setLaunchWorkspace(notificationTarget.workspace);
@@ -520,7 +526,7 @@ function MachineConsole({
         (!pendingNotificationTarget.workspace || terminal.workspace === pendingNotificationTarget.workspace),
     );
     if (!target) {
-      if (terminalsLoaded.current && !snapshot.errors?.terminals) {
+      if (terminalsRequestedAt.current > targetArrivedAt.current && !snapshot.errors?.terminals) {
         setSelectedTerminalId(null);
         onNotificationHandled();
       }

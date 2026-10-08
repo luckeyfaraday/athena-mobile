@@ -30,7 +30,10 @@ const server = http.createServer((req, res) => {
   }
   if (req.url.startsWith("/athena-remote/")) {
     req.url = req.url.slice("/athena-remote".length);
-    return remoteMachines.middleware(req, res);
+    return remoteMachines.middleware(req, res).catch(() => {
+      if (!res.headersSent) sendText(res, 500, "Remote gateway error");
+      else res.destroy();
+    });
   }
   if (req.url.startsWith("/athena-push")) {
     req.url = req.url.slice("/athena-push".length) || "/";

@@ -275,3 +275,11 @@ test("requests from another site are refused", async (t) => {
   assert.equal(response.status, 403);
   assert.equal(remote.seen.length, 0);
 });
+
+test("a malformed path gets a 400 instead of crashing the server", async (t) => {
+  const { server, base } = await gateway(1);
+  t.after(() => server.close());
+  const response = await fetch(`${base.replace("/athena-remote", "")}/athena-remote//[`);
+  assert.equal(response.status, 400);
+  assert.equal((await fetch(`${base}/machines`)).status, 200);
+});
