@@ -22,8 +22,8 @@ import {
   usagePollDelay,
 } from "../usage";
 
-// Subscription quota for the laptop's Claude and Codex accounts: a compact
-// pill in the header, a list in Settings, and a details sheet. The laptop's
+// Subscription quota for the host's Claude and Codex accounts: a compact
+// pill in the header, a list in Settings, and a details sheet. The host's
 // backend owns provider logins and a shared cache; this only polls that cache
 // (faster while a probe is running, paused while the app is in the background).
 
@@ -145,12 +145,12 @@ function useNow(intervalMs: number): number {
 
 export type UsageState = {
   accounts: UsageAccount[];
-  /** Now on the laptop's clock; reset times and ages are laptop timestamps. */
+  /** Now on the host's clock; reset times and ages are host timestamps. */
   now: number;
   refreshing: boolean;
   refresh: (accountKey?: string) => Promise<void>;
   errorFor: (account: UsageAccount) => string | null;
-  /** True once the laptop answered; false on a host whose Athena predates usage monitoring. */
+  /** True once the host answered; false on a host whose Athena predates usage monitoring. */
   loaded: boolean;
 };
 
@@ -162,10 +162,10 @@ export function useUsage(client: AthenaClient): UsageState {
     receivedAt,
     now,
     pollFailed: pollError !== null,
-    unreachableMessage: "Couldn't reach the laptop; showing the last values it reported.",
+    unreachableMessage: "Couldn't reach the host; showing the last values it reported.",
   });
   const errorFor = (account: UsageAccount): string | null => {
-    if (pollError) return `Laptop error: ${pollError}`;
+    if (pollError) return `Host error: ${pollError}`;
     if (refreshError && (refreshError.accountKey === null || refreshError.accountKey === account.key)) {
       return `Refresh failed: ${refreshError.message}`;
     }
@@ -194,7 +194,7 @@ export function busiestAccount(accounts: UsageAccount[], now: number): { account
 }
 
 /**
- * Header pill: the highest quota use across the laptop's accounts, colored by
+ * Header pill: the highest quota use across the host's accounts, colored by
  * level. Tapping opens the details sheet on that account; the sheet's tabs
  * reach the others.
  */
@@ -228,7 +228,7 @@ export function UsageButton({ usage, onOpen }: { usage: UsageState; onOpen: (acc
 /** Settings list: one row per account with its quota bars. */
 export function UsageList({ usage, onOpen }: { usage: UsageState; onOpen: (accountKey: string, button: HTMLButtonElement) => void }) {
   if (usage.accounts.length === 0) {
-    return <p className="settingsEmpty">{usage.loaded ? "No Claude or Codex accounts are signed in on the laptop." : "The laptop's Athena doesn't report subscription usage yet."}</p>;
+    return <p className="settingsEmpty">{usage.loaded ? "No Claude or Codex accounts are signed in on the host." : "Athena on the host doesn't report subscription usage yet."}</p>;
   }
   return (
     <div className="usageList" role="group" aria-label="Subscription usage">
@@ -453,7 +453,7 @@ function UsageSheet({
             <span>{nextCheck !== null && !busy ? `Next check in ${formatDuration(nextCheck)}` : ""}</span>
           </div>
           {error && <p className="usageMessage">{error}</p>}
-          <p className="usageFootnote">Limits reported by each provider for the laptop's signed-in CLIs. Local transcript token counts are not included.</p>
+          <p className="usageFootnote">Limits reported by each provider for the host's signed-in CLIs. Local transcript token counts are not included.</p>
         </div>
       </div>
     </div>

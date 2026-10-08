@@ -4,6 +4,7 @@ import https from "node:https";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { discoveryDir } from "./discovery.mjs";
 import { createPushNotifier } from "./push-notifier.mjs";
 import { createRemoteMachines } from "./remote-machines.mjs";
 import { serveStatic } from "./static.mjs";
@@ -91,7 +92,7 @@ function targetFromDiscovery(fileName, envName, fallback) {
 
 function readDiscovery(fileName) {
   try {
-    const data = JSON.parse(fs.readFileSync(path.join(os.homedir(), ".context-workspace", fileName), "utf8"));
+    const data = JSON.parse(fs.readFileSync(path.join(discoveryDir(), fileName), "utf8"));
     return {
       baseUrl: typeof data?.baseUrl === "string" && data.baseUrl.trim() ? data.baseUrl.trim() : null,
       token: typeof data?.token === "string" && data.token.trim() ? data.token.trim() : null,

@@ -1,4 +1,5 @@
-// Other machines' Athena, reached through this laptop.
+// Other machines' Athena, reached through the machine hosting this app (a
+// laptop running desktop Athena, or a server running headless Athena).
 //
 // Athena's remote access (context-workspace client/electron/remote-access.ts)
 // serves the same control API as the local control server on each machine's
@@ -232,8 +233,8 @@ export async function discoverMachines({ status, port, probe, tokenFor, now = Da
     const classified = classifyProbe(await probe(remoteUrl(address, port), tokenFor(peer.id)));
     if (classified.status === "needs-token") {
       classified.detail = ownDevice
-        ? "Its “Trust my own devices” setting is off. Add its access token in Athena on this laptop (Settings → System → Your machines)."
-        : "Not on your Tailscale account. Add its access token in Athena on this laptop (Settings → System → Your machines).";
+        ? "Its “Trust my own devices” setting is off, so it needs its access token."
+        : "Not on your Tailscale account, so it needs its access token.";
     }
     return { ...base, ...classified };
   }));
@@ -340,6 +341,8 @@ function proxy(req, res, target, token, name) {
 /** Electron's userData folder for the desktop app (package name context-workspace-client). */
 export function athenaUserDataDir(env = process.env, platform = process.platform, home = os.homedir()) {
   if (env.ATHENA_USER_DATA) return env.ATHENA_USER_DATA;
+  // A headless Athena server keeps remote-access.json (and any remote-tokens.json) in its data folder.
+  if (env.ATHENA_SERVER_DATA_DIR) return env.ATHENA_SERVER_DATA_DIR;
   if (platform === "win32") return path.join(env.APPDATA || path.join(home, "AppData", "Roaming"), "context-workspace-client");
   if (platform === "darwin") return path.join(home, "Library", "Application Support", "context-workspace-client");
   return path.join(env.XDG_CONFIG_HOME || path.join(home, ".config"), "context-workspace-client");
@@ -368,7 +371,7 @@ export function readTokens(userData) {
   return Object.fromEntries(Object.entries(tokens).filter(([, token]) => typeof token === "string" && token.trim()).map(([id, token]) => [id, token.trim()]));
 }
 
-/** This laptop's name and desktop Athena's theme, so the phone can match it. */
+/** The host's name and desktop Athena's theme there (none on a headless server), so the phone can match it. */
 function selfInfo(status, userData) {
   const theme = readJson(path.join(userData, "athena-preferences.json"))?.[THEME_PREFERENCE_KEY];
   return {

@@ -74,7 +74,7 @@ const MACHINES_REFRESH_MS = 60_000;
 
 export function App() {
   const config = useMemo(() => readConfig(), []);
-  // Usage always describes the laptop's signed-in accounts, whichever machine is in view.
+  // Usage always describes the host's signed-in accounts, whichever machine is in view.
   const laptopClient = useMemo(() => createAthenaClient(config), [config]);
 
   // Hydrate the cross-reload state (tab, machine, theme) so a backgrounded PWA
@@ -88,7 +88,7 @@ export function App() {
     parseNotificationTarget(window.location.href) ??
     loadPersisted<NotificationTarget | null>(STORAGE_KEYS.pendingNotificationTarget, null),
   );
-  // Alerts come from the laptop's agents, so an unhandled one opens the laptop.
+  // Alerts come from the host's agents, so an unhandled one opens the host.
   const [machineId, setMachineId] = useState<string | null>(() =>
     pendingNotificationTarget ? null : loadPersisted<string | null>(STORAGE_KEYS.machineId, null),
   );
@@ -97,7 +97,7 @@ export function App() {
 
   const activeMachine = machineId ? machines?.machines.find((machine) => machine.id === machineId) ?? null : null;
   const machineName = activeMachine?.name ?? loadPersisted<string | null>(STORAGE_KEYS.machineName, null) ?? "Other machine";
-  const localName = machines?.self.name ?? "This laptop";
+  const localName = machines?.self.name ?? "This host";
   // Only the id picks the machine; name and platform just label it, so the
   // client survives a machines refresh.
   const machineRef = useMemo<MachineRef | null>(
@@ -106,7 +106,7 @@ export function App() {
   );
   const client = useMemo(() => createAthenaClient(config, machineRef), [config, machineRef]);
 
-  // ── Theme: the phone's choice, the laptop's desktop theme, or the phone's light/dark setting.
+  // ── Theme: the phone's choice, desktop Athena's theme on the host, or the phone's light/dark setting.
   const [themePreference, setThemePreference] = useState<ThemePreference>(readThemePreference);
   const [laptopTheme, setLaptopTheme] = useState<string | null>(readLaptopTheme);
   const [prefersLight, setPrefersLight] = useState(systemPrefersLight);
@@ -138,7 +138,7 @@ export function App() {
     usageTriggerRef.current?.focus();
   }, []);
 
-  // ── Machines on the tailnet, as the laptop sees them.
+  // ── Machines on the tailnet, as the host sees them.
   const machinesInFlight = useRef(false);
   const loadMachines = useCallback(
     async (fresh = false) => {
@@ -198,7 +198,7 @@ export function App() {
   // Deep-link from a notification: focus the agent it fired for. Covers both the
   // cold open (the SW launched a new window at /?terminal=…&workspace=…) and a
   // warm focus (the SW posts a message to the already-open app). Alerts come
-  // from the laptop's agents, so they always switch back to the laptop.
+  // from the host's agents, so they always switch back to the host.
   useEffect(() => {
     const focusTerminal = (rawUrl: string) => {
       const target = parseNotificationTarget(rawUrl);
@@ -983,7 +983,7 @@ function HistoryView({
   /** The folder whose sessions are listed: the selected agent's. */
   workspace: string;
   sessions: AgentSession[];
-  /** Past transcripts can be opened here (the laptop's only, for now). */
+  /** Past transcripts can be opened here (the host's only, for now). */
   transcripts: boolean;
   busy: boolean;
   onResume: (session: AgentSession) => void;

@@ -5,6 +5,7 @@ import http from "node:http";
 import https from "node:https";
 import os from "node:os";
 import path from "node:path";
+import { discoveryDir } from "./server/discovery.mjs";
 import { athenaPushPlugin } from "./server/push-plugin.mjs";
 import { createRemoteMachines } from "./server/remote-machines.mjs";
 
@@ -100,7 +101,7 @@ function stripHopByHopHeaders(headers: http.IncomingHttpHeaders): http.OutgoingH
 }
 
 function discoveryFilePath(fileName: string): string {
-  return path.join(os.homedir(), ".context-workspace", fileName);
+  return path.join(discoveryDir(), fileName);
 }
 
 function readDiscovery(fileName: string): Record<string, unknown> | null {

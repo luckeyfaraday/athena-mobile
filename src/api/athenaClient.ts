@@ -24,9 +24,9 @@ import { fromRemoteSession, pathBaseName } from "../machines";
 import { parseTranscript } from "../transcript";
 
 export type AthenaClient = {
-  /** The machine whose agents this client controls; null for the laptop serving the app. */
+  /** The machine whose agents this client controls; null for the host serving the app. */
   readonly machine: MachineRef | null;
-  /** Past sessions' transcripts can be opened (only the laptop's backend serves them). */
+  /** Past sessions' transcripts can be opened (only the host's backend serves them). */
   readonly historyTranscripts: boolean;
   snapshot(projectDir?: string): Promise<MobileSnapshot>;
   refreshService(): Promise<ServiceState>;
@@ -90,13 +90,13 @@ const REMOTE_HISTORY_RETRY_MS = 15_000;
 // cold backend cache, well past the default timeout.
 const ALL_SESSIONS_TIMEOUT_MS = 60_000;
 
-/** A client for the laptop (`machine` null) or for another machine reached through it. */
+/** A client for the host (`machine` null) or for another machine reached through it. */
 export function createAthenaClient(config: AppConfig, machine: MachineRef | null = null): AthenaClient {
   if (config.mode !== "live") return new DemoAthenaClient(config, machine);
   return machine ? new RemoteAthenaClient(config, machine) : new HttpAthenaClient(config);
 }
 
-/** The other desktops on the tailnet, as the laptop sees them. `fresh` re-asks each machine now. */
+/** The other desktops on the tailnet, as the host sees them. `fresh` re-asks each machine now. */
 export async function fetchMachines(config: AppConfig, fresh = false): Promise<MachinesSnapshot> {
   if (config.mode !== "live") return demoMachines();
   if (!config.remoteUrl) throw new Error("Remote URL is not configured.");
@@ -314,11 +314,11 @@ class HttpAthenaClient implements AthenaClient {
   }
 }
 
-// Another machine's Athena through the laptop. Its control API is the same as
-// the laptop's (terminals, streams, input, spawn); history comes from that
+// Another machine's Athena through the host. Its control API is the same as
+// the host's (terminals, streams, input, spawn); history comes from that
 // machine's /agent-sessions and conversations from its /terminals/:id/chat,
-// since only the laptop's Python backend is reachable from here. Usage stays
-// the laptop's: it describes the laptop's signed-in accounts.
+// since only the host's Python backend is reachable from here. Usage stays
+// the host's: it describes the host's signed-in accounts.
 class RemoteAthenaClient extends HttpAthenaClient {
   override readonly historyTranscripts = false;
   private history: { workspace: string; at: number; sessions: AgentSession[]; error: Error | null } | null = null;
@@ -673,7 +673,7 @@ function demoMachines(): MachinesSnapshot {
         name: "build-server",
         status: "needs-token",
         ownDevice: false,
-        detail: "Not on your Tailscale account. Add its access token in Athena on this laptop (Settings → System → Your machines).",
+        detail: "Not on your Tailscale account, so it needs its access token.",
       }),
       machine({ id: "demo-old", name: "old-laptop", status: "offline", online: false }),
     ],

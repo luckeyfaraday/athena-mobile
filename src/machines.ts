@@ -11,7 +11,7 @@ export function machineStateLabel(machine: RemoteMachine): string {
     case "needs-token":
       return "Needs access token";
     case "refused":
-      return "Refused this laptop";
+      return "Refused this host";
     case "no-athena":
       return "Athena not answering";
     case "offline":

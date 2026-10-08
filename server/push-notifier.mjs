@@ -14,10 +14,10 @@
 // only thing that must keep running is this dev server.
 
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import webpush from "web-push";
 import { AttentionTracker } from "./attention.mjs";
+import { discoveryDir } from "./discovery.mjs";
 
 const SECRETS_FILE = "athena-mobile-push.json";
 const CONTROL_DISCOVERY = "electron-control.json";
@@ -328,10 +328,6 @@ function validVapidSubject(value) {
 }
 
 // ---- secrets + discovery ----------------------------------------------------
-
-function discoveryDir() {
-  return path.join(os.homedir(), ".context-workspace");
-}
 
 function loadSecrets() {
   const file = path.join(discoveryDir(), SECRETS_FILE);

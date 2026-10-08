@@ -283,3 +283,8 @@ test("a malformed path gets a 400 instead of crashing the server", async (t) => 
   assert.equal(response.status, 400);
   assert.equal((await fetch(`${base}/machines`)).status, 200);
 });
+
+test("a headless Athena server's data folder stands in for desktop Athena's settings", () => {
+  assert.equal(athenaUserDataDir({ ATHENA_SERVER_DATA_DIR: "/srv/athena" }, "linux", "/home/ada"), "/srv/athena");
+  assert.equal(athenaUserDataDir({ ATHENA_SERVER_DATA_DIR: "/srv/athena", ATHENA_USER_DATA: "/x" }, "linux", "/home/ada"), "/x");
+});

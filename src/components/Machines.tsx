@@ -1,9 +1,9 @@
 import { useEffect, useRef, type ReactNode } from "react";
-import { Check, ChevronDown, KeyRound, Laptop, Monitor, RefreshCw, Settings2, X } from "lucide-react";
+import { Check, ChevronDown, House, KeyRound, Monitor, RefreshCw, Settings2, X } from "lucide-react";
 import { machineStateLabel, switcherMachines } from "../machines";
 import type { MachinesSnapshot, RemoteMachine } from "../types";
 
-// Picks whose agents the app shows: the laptop serving it, or another machine
+// Picks whose agents the app shows: the host serving it, or another machine
 // on the tailnet running Athena with remote access on. Mirrors desktop
 // Athena's machine switcher (client/src/components/MachineSwitcher.tsx).
 
@@ -30,7 +30,7 @@ export function MachineButton({
       aria-label={`Viewing ${name}${online ? "" : ", not answering"}. Switch machine`}
       onClick={onOpen}
     >
-      {remote ? <Monitor size={14} aria-hidden="true" /> : <Laptop size={14} aria-hidden="true" />}
+      {remote ? <Monitor size={14} aria-hidden="true" /> : <House size={14} aria-hidden="true" />}
       <span className="machineButtonName">{name}</span>
       <i className={online ? "machineButtonDot online" : "machineButtonDot"} aria-hidden="true" />
       <ChevronDown size={14} aria-hidden="true" />
@@ -39,7 +39,7 @@ export function MachineButton({
 }
 
 /**
- * The laptop first, then other machines. The switcher lists only machines you
+ * The host first, then other machines. The switcher lists only machines you
  * can open (or that just need a token); Settings passes `includeAll` to list
  * offline and Athena-less ones too, with why.
  */
@@ -63,8 +63,8 @@ export function MachineList({
     <div className="machineList" role="radiogroup" aria-label="Machines">
       <MachineRow
         name={localName}
-        detail={localRunning ? `This laptop · ${localRunning} running` : "This laptop"}
-        icon={<Laptop size={16} />}
+        detail={localRunning ? `Hosts this app · ${localRunning} running` : "Hosts this app"}
+        icon={<House size={16} />}
         active={activeId === null}
         available
         onClick={() => onSelect(null)}
@@ -171,7 +171,7 @@ export function MachineSheet({
         <div className="sheetHead">
           <div>
             <strong id="machine-sheet-title">Machines</strong>
-            <small>{snapshot?.account ? `Tailscale · ${snapshot.account}` : "Over Tailscale, through this laptop"}</small>
+            <small>{snapshot?.account ? `Tailscale · ${snapshot.account}` : `Over Tailscale, through ${localName}`}</small>
           </div>
           <div className="sheetHeadActions">
             <button className="iconButton" type="button" onClick={onRefresh} disabled={state.loading} aria-label="Check machines again">
@@ -191,7 +191,7 @@ export function MachineSheet({
             includeAll={false}
             onSelect={onSelect}
           />
-          <MachinesNote snapshot={snapshot} state={state} hidden={hidden} />
+          <MachinesNote snapshot={snapshot} state={state} hostName={localName} hidden={hidden} />
           <button type="button" className="ghostButton wide" onClick={onManage}>
             <Settings2 size={14} /> All machines and settings
           </button>
@@ -202,13 +202,23 @@ export function MachineSheet({
 }
 
 /** Why the list looks the way it does: Tailscale down, a failed check, or machines left out. */
-export function MachinesNote({ snapshot, state, hidden = 0 }: { snapshot: MachinesSnapshot | null; state: MachinesLoadState; hidden?: number }) {
+export function MachinesNote({
+  snapshot,
+  state,
+  hostName,
+  hidden = 0,
+}: {
+  snapshot: MachinesSnapshot | null;
+  state: MachinesLoadState;
+  hostName: string;
+  hidden?: number;
+}) {
   if (state.error) return <p className="machinesNote error">Couldn't check machines: {state.error}</p>;
   if (!snapshot) return <p className="machinesNote">{state.loading ? "Looking for machines…" : "Machines haven't been checked yet."}</p>;
   if (snapshot.tailscale === "unavailable") {
-    return <p className="machinesNote">Tailscale isn't available on the laptop, so other machines can't be reached.</p>;
+    return <p className="machinesNote">Tailscale isn't available on {hostName}, so other machines can't be reached.</p>;
   }
-  if (snapshot.tailscale === "stopped") return <p className="machinesNote">Tailscale is stopped on the laptop.</p>;
+  if (snapshot.tailscale === "stopped") return <p className="machinesNote">Tailscale is stopped on {hostName}.</p>;
   if (snapshot.machines.length === 0) {
     return <p className="machinesNote">No other computers on your tailnet. Install Athena on one and turn on remote access in its Settings → System.</p>;
   }
