@@ -6,6 +6,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createPushNotifier } from "./push-notifier.mjs";
 import { createRemoteMachines } from "./remote-machines.mjs";
+import { serveStatic } from "./static.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const rootDir = path.resolve(__dirname, "..");
@@ -39,7 +40,7 @@ const server = http.createServer((req, res) => {
     req.url = req.url.slice("/athena-push".length) || "/";
     return notifier.middleware(req, res);
   }
-  return serveStatic(req, res);
+  return serveStatic(req, res, distDir);
 });
 
 server.listen(port, host, () => {
@@ -78,20 +79,6 @@ function proxyRequest(req, res, prefix, targetInfo) {
     res.end(JSON.stringify({ error: `Athena proxy failed: ${error.message}` }));
   });
   req.pipe(upstream);
-}
-
-function serveStatic(req, res) {
-  const url = new URL(req.url, "http://athena-mobile.local");
-  const pathname = decodeURIComponent(url.pathname);
-  const requested = path.normalize(path.join(distDir, pathname));
-  if (!requested.startsWith(distDir)) return sendText(res, 403, "Forbidden");
-
-  const file = fs.existsSync(requested) && fs.statSync(requested).isFile()
-    ? requested
-    : path.join(distDir, "index.html");
-  res.statusCode = 200;
-  res.setHeader("Content-Type", contentType(file));
-  fs.createReadStream(file).pipe(res);
 }
 
 function targetFromDiscovery(fileName, envName, fallback) {
@@ -152,20 +139,6 @@ function isCgnat(ip) {
   if (octets.length !== 4 || octets.some((octet) => !Number.isInteger(octet))) return false;
   const [first, second] = octets;
   return first === 100 && second >= 64 && second <= 127;
-}
-
-function contentType(file) {
-  const ext = path.extname(file);
-  return {
-    ".css": "text/css; charset=utf-8",
-    ".html": "text/html; charset=utf-8",
-    ".ico": "image/x-icon",
-    ".js": "text/javascript; charset=utf-8",
-    ".json": "application/json; charset=utf-8",
-    ".png": "image/png",
-    ".svg": "image/svg+xml",
-    ".webmanifest": "application/manifest+json; charset=utf-8",
-  }[ext] || "application/octet-stream";
 }
 
 function sendText(res, status, text) {

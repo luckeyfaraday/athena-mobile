@@ -7,12 +7,16 @@
 // This worker keeps an app-shell cache so the shell paints instantly from disk and
 // only the live data/SSE has to revalidate.
 //
-// Strategy: stale-while-revalidate for same-origin GETs (navigation + hashed Vite
-// assets) — serve the cached copy immediately, refresh it from the network in the
-// background. The proxied Athena API and the SSE stream are never touched, so live
-// control always hits the real backend.
+// Navigations use the network first so an old shell cannot reference assets
+// removed by a deployment, but fall back to the cached shell after a few
+// seconds: an unreachable host usually hangs rather than refusing, and the app
+// must not sit on a blank screen waiting for it. Hashed assets (/assets/) never
+// change, so they are cache-first; other files (manifest, icons) are
+// network-first with the cache as the offline fallback. The proxied Athena API
+// and SSE stream always use the network.
 
-const CACHE = "athena-shell-v1";
+const CACHE = "athena-shell-v2";
+const NAVIGATION_TIMEOUT_MS = 3000;
 
 // When registered against the HTTPS dev server (so push can be tested), the
 // worker must not cache Vite's module graph — that would serve stale code across
@@ -37,7 +41,7 @@ self.addEventListener("activate", (event) => {
       // Drop caches from older worker versions, then take control of open clients
       // so the very next navigation is served by this worker.
       const names = await caches.keys();
-      await Promise.all(names.filter((name) => name !== CACHE).map((name) => caches.delete(name)));
+      await Promise.all(names.filter((name) => name.startsWith("athena-shell-") && name !== CACHE).map((name) => caches.delete(name)));
       await self.clients.claim();
     })(),
   );
@@ -52,7 +56,11 @@ self.addEventListener("fetch", (event) => {
   if (url.origin !== self.location.origin) return;
   if (PASS_THROUGH.some((prefix) => url.pathname.startsWith(prefix))) return;
 
-  event.respondWith(staleWhileRevalidate(request));
+  const { response, settled } = appResponse(request);
+  event.respondWith(response);
+  // Keeps the worker alive until the network answer is cached, even when the
+  // cached shell was served first.
+  event.waitUntil(settled);
 });
 
 // A push arrives even when the PWA is closed; show the agent-attention alert.
@@ -101,29 +109,47 @@ function safeJson(data) {
   }
 }
 
-async function staleWhileRevalidate(request) {
-  const cache = await caches.open(CACHE);
-  const cached = await cache.match(request);
+function validResponse(request, response) {
+  if (response.status !== 200 || response.redirected) return false;
+  const type = response.headers.get("Content-Type") || "";
+  const pathname = new URL(request.url).pathname;
+  if (request.mode === "navigate") return type.includes("text/html");
+  if (pathname.endsWith(".js")) return /(?:java|ecma)script/i.test(type);
+  if (pathname.endsWith(".css")) return type.includes("text/css");
+  // Never store the SPA fallback as an icon, script, or other static asset.
+  return !type.includes("text/html");
+}
 
-  const network = fetch(request)
-    .then((response) => {
-      // Only cache complete, successful responses; an opaque/redirect/error
-      // response would poison the shell on the next load.
-      if (response.ok && response.status === 200) cache.put(request, response.clone());
-      return response;
-    })
-    .catch(() => null);
+function appResponse(request) {
+  const navigation = request.mode === "navigate";
+  const hashed = new URL(request.url).pathname.startsWith("/assets/");
+  let network = null;
+  const response = (async () => {
+    const cache = await caches.open(CACHE);
+    // Any navigation (a notification deep link included) can use the app shell.
+    const hit = (await cache.match(request)) ?? (navigation ? (await cache.match("/")) ?? (await cache.match("/index.html")) : undefined);
+    const cached = hit && validResponse(request, hit) ? hit : null;
+    if (hashed && cached) return cached;
 
-  // Cached copy first for an instant paint; fall back to the network on a cache
-  // miss (first ever load, or a newly-deployed hashed asset).
-  const response = cached ?? (await network);
-  if (response) return response;
+    network = fetch(request, navigation ? { cache: "no-store" } : undefined).then(async (fresh) => {
+      // A full cache or private browsing must not discard a working response.
+      if (validResponse(request, fresh)) {
+        try { await cache.put(request, fresh.clone()); } catch { /* best effort */ }
+      }
+      return fresh;
+    });
 
-  // Offline with nothing cached: for a navigation, serve the cached app shell so
-  // the SPA still boots and can show its own connection error.
-  if (request.mode === "navigate") {
-    const shell = await cache.match("/index.html") ?? (await cache.match("/"));
-    if (shell) return shell;
-  }
-  return Response.error();
+    if (navigation && cached) {
+      const timedOut = new Promise((resolve) => setTimeout(() => resolve(null), NAVIGATION_TIMEOUT_MS));
+      const first = await Promise.race([network.catch(() => null), timedOut]);
+      return first && validResponse(request, first) ? first : cached;
+    }
+    try {
+      const fresh = await network;
+      if (!navigation || validResponse(request, fresh)) return fresh;
+    } catch { /* offline: use the cached copy below */ }
+    return cached ?? Response.error();
+  })();
+  const settled = response.then(() => network?.catch(() => undefined), () => undefined);
+  return { response, settled };
 }
