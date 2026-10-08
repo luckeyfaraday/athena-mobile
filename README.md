@@ -130,7 +130,9 @@ tailscale serve --bg https / http://127.0.0.1:4174
 server's ports and control token from it (`backend.json`,
 `electron-control.json`), its remote port from `remote-access.json`, optional
 access tokens for other machines from `remote-tokens.json`, and keeps its push
-keys there. Run it as a systemd user service beside `athena-server.service`
+keys there (`athena-mobile-push.json`). `ATHENA_DISCOVERY_DIR` moves only the
+discovery files and push keys; moving the push keys on a host with subscribers
+means turning alerts on again on the phone. Run it as a systemd user service beside `athena-server.service`
 (with `loginctl enable-linger` so both run without a login). A headless server
 has no desktop theme, so "Match Athena" paints Classic; pick a theme in Settings.
 

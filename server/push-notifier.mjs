@@ -346,7 +346,8 @@ function loadSecrets() {
 
 function saveSecrets(secrets) {
   const dir = discoveryDir();
-  fs.mkdirSync(dir, { recursive: true });
+  // Private like Athena's own folder, in case this runs before Athena first creates it.
+  fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
   const file = path.join(dir, SECRETS_FILE);
   fs.writeFileSync(file, JSON.stringify(secrets, null, 2), { mode: 0o600 });
   // Tighten perms even if the file already existed with looser bits.
