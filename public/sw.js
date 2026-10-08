@@ -7,12 +7,11 @@
 // This worker keeps an app-shell cache so the shell paints instantly from disk and
 // only the live data/SSE has to revalidate.
 //
-// Strategy: stale-while-revalidate for same-origin GETs (navigation + hashed Vite
-// assets) — serve the cached copy immediately, refresh it from the network in the
-// background. The proxied Athena API and the SSE stream are never touched, so live
-// control always hits the real backend.
+// Navigations use the network first so an old shell cannot reference assets
+// removed by a deployment. Hashed assets stay cache-first for fast repeat loads.
+// The proxied Athena API and SSE stream always use the network.
 
-const CACHE = "athena-shell-v1";
+const CACHE = "athena-shell-v2";
 
 // When registered against the HTTPS dev server (so push can be tested), the
 // worker must not cache Vite's module graph — that would serve stale code across
@@ -37,7 +36,7 @@ self.addEventListener("activate", (event) => {
       // Drop caches from older worker versions, then take control of open clients
       // so the very next navigation is served by this worker.
       const names = await caches.keys();
-      await Promise.all(names.filter((name) => name !== CACHE).map((name) => caches.delete(name)));
+      await Promise.all(names.filter((name) => name.startsWith("athena-shell-") && name !== CACHE).map((name) => caches.delete(name)));
       await self.clients.claim();
     })(),
   );
@@ -52,7 +51,9 @@ self.addEventListener("fetch", (event) => {
   if (url.origin !== self.location.origin) return;
   if (PASS_THROUGH.some((prefix) => url.pathname.startsWith(prefix))) return;
 
-  event.respondWith(staleWhileRevalidate(request));
+  const response = appResponse(request);
+  event.respondWith(response);
+  event.waitUntil(response.then(() => undefined, () => undefined));
 });
 
 // A push arrives even when the PWA is closed; show the agent-attention alert.
@@ -101,27 +102,38 @@ function safeJson(data) {
   }
 }
 
-async function staleWhileRevalidate(request) {
+function validResponse(request, response) {
+  if (response.status !== 200 || response.redirected) return false;
+  const type = response.headers.get("Content-Type") || "";
+  const pathname = new URL(request.url).pathname;
+  if (request.mode === "navigate") return type.includes("text/html");
+  if (pathname.endsWith(".js")) return /(?:java|ecma)script/i.test(type);
+  if (pathname.endsWith(".css")) return type.includes("text/css");
+  // Never store the SPA fallback as an icon, script, or other static asset.
+  return !type.includes("text/html");
+}
+
+async function appResponse(request) {
   const cache = await caches.open(CACHE);
   const cached = await cache.match(request);
+  const navigation = request.mode === "navigate";
+  if (!navigation && cached && validResponse(request, cached)) return cached;
 
-  const network = fetch(request)
-    .then((response) => {
-      // Only cache complete, successful responses; an opaque/redirect/error
-      // response would poison the shell on the next load.
-      if (response.ok && response.status === 200) cache.put(request, response.clone());
+  try {
+    const response = await fetch(request, navigation ? { cache: "no-store" } : undefined);
+    if (validResponse(request, response)) {
+      // A full cache or private browsing must not discard a working response.
+      try { await cache.put(request, response.clone()); } catch { /* best effort */ }
       return response;
-    })
-    .catch(() => null);
+    }
+    if (!navigation) return response;
+  } catch { /* offline: use the last known shell below */ }
 
-  // Cached copy first for an instant paint; fall back to the network on a cache
-  // miss (first ever load, or a newly-deployed hashed asset).
-  const response = cached ?? (await network);
-  if (response) return response;
+  if (cached && validResponse(request, cached)) return cached;
 
   // Offline with nothing cached: for a navigation, serve the cached app shell so
   // the SPA still boots and can show its own connection error.
-  if (request.mode === "navigate") {
+  if (navigation) {
     const shell = await cache.match("/index.html") ?? (await cache.match("/"));
     if (shell) return shell;
   }

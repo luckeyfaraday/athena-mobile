@@ -12,9 +12,46 @@
     <link rel="icon" href="/athena-icon-256.png" type="image/png" sizes="256x256" />
     <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
     <title>Athena Mobile</title>
+    <style>
+      html { background: #0a0a0a; color: #f5f5f5; font-family: system-ui, sans-serif; }
+      #startup { padding: 48px 24px; max-width: 480px; margin: auto; }
+      #startup button { padding: 12px 18px; font: inherit; cursor: pointer; }
+    </style>
   </head>
   <body>
-    <div id="root"></div>
+    <div id="root">
+      <div id="startup" role="status">
+        <h1>Athena Mobile</h1>
+        <p id="startup-status">Loading Athena…</p>
+        <button id="startup-retry" hidden>Reload app</button>
+      </div>
+    </div>
+    <script>
+      // Keep recovery and worker updates independent of the app bundle: a
+      // missing JS file must not strand this installation on an old worker.
+      (function () {
+        function showRecovery() {
+          var status = document.getElementById("startup-status");
+          var retry = document.getElementById("startup-retry");
+          if (!status || !retry) return;
+          status.textContent = "Athena couldn't finish loading. Check your connection and try again.";
+          retry.hidden = false;
+        }
+        document.getElementById("startup-retry").onclick = function () {
+          var url = new URL(location.href);
+          url.searchParams.set("reload", Date.now().toString());
+          location.replace(url.href);
+        };
+        window.addEventListener("error", showRecovery, true);
+        window.setTimeout(showRecovery, 10000);
+        window.addEventListener("load", function () {
+          if ("serviceWorker" in navigator && window.isSecureContext) {
+            var dev = !!document.querySelector('script[src="/@vite/client"]');
+            navigator.serviceWorker.register(dev ? "/sw.js?dev=1" : "/sw.js", { updateViaCache: "none" }).catch(function () {});
+          }
+        });
+      })();
+    </script>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>
