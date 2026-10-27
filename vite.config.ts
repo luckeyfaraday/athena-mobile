@@ -6,6 +6,7 @@ import https from "node:https";
 import os from "node:os";
 import path from "node:path";
 import { discoveryDir } from "./server/discovery.mjs";
+import { createJarvisProxy } from "./server/jarvis-proxy.mjs";
 import { athenaPushPlugin } from "./server/push-plugin.mjs";
 import { createRemoteMachines } from "./server/remote-machines.mjs";
 
@@ -34,6 +35,9 @@ function athenaProxyPlugin() {
         else res.destroy();
       });
     });
+    // Jarvis at ATHENA_JARVIS_TARGET, when set; see server/jarvis-proxy.mjs.
+    const jarvis = createJarvisProxy();
+    middlewares.use("/athena-jarvis", (req, res) => jarvis.middleware(req, res));
     middlewares.use("/athena-backend", (req, res) => {
       proxyAthenaRequest(req, res, "backend.json", process.env.ATHENA_BACKEND_TARGET, "http://127.0.0.1:8000");
     });

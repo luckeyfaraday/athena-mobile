@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { discoveryDir } from "./discovery.mjs";
+import { createJarvisProxy } from "./jarvis-proxy.mjs";
 import { createPushNotifier } from "./push-notifier.mjs";
 import { createRemoteMachines } from "./remote-machines.mjs";
 import { serveStatic } from "./static.mjs";
@@ -16,6 +17,7 @@ const host = resolveHost();
 const port = Number(process.env.PORT || process.env.ATHENA_MOBILE_PORT || 4174);
 const notifier = createPushNotifier();
 const remoteMachines = createRemoteMachines();
+const jarvis = createJarvisProxy();
 
 if (!fs.existsSync(path.join(distDir, "index.html"))) {
   console.error("Missing dist/index.html. Run `npm run build` before `npm start`.");
@@ -37,6 +39,10 @@ const server = http.createServer((req, res) => {
       else res.destroy();
     });
   }
+  if (req.url === "/athena-jarvis" || req.url.startsWith("/athena-jarvis/")) {
+    req.url = req.url.slice("/athena-jarvis".length) || "/";
+    return jarvis.middleware(req, res);
+  }
   if (req.url.startsWith("/athena-push")) {
     req.url = req.url.slice("/athena-push".length) || "/";
     return notifier.middleware(req, res);
@@ -47,6 +53,7 @@ const server = http.createServer((req, res) => {
 server.listen(port, host, () => {
   notifier.start();
   console.log(`Athena Mobile listening at http://${host}:${port}`);
+  if (jarvis.target) console.log(`Jarvis: /athena-jarvis forwards to ${jarvis.target}`);
 });
 
 function shutdown() {

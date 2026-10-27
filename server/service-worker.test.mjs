@@ -98,7 +98,15 @@ test("activation removes the broken v1 cache without deleting unrelated caches",
 
 test("API requests and dev modules remain network-only", async () => {
   const worker = harness(() => { assert.fail("worker must not handle API requests"); });
-  for (const path of ["/athena-backend/health", "/athena-control/events", "/athena-push/key"]) {
+  for (const path of [
+    "/athena-backend/health",
+    "/athena-control/events",
+    "/athena-push/key",
+    "/athena-jarvis/jarvis",
+    "/athena-jarvis/jarvis/events",
+    "/athena-control/jarvis/events",
+    "/athena-remote/m/node1/jarvis/events",
+  ]) {
     assert.equal(await worker.request(path, "cors"), undefined);
   }
   assert.equal(await harness(() => {}, true).request("/src/main.tsx", "cors"), undefined);

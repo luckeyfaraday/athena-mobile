@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
+  AudioLines,
   Bot,
   ChevronDown,
   CircleStop,
@@ -18,6 +19,7 @@ import {
 import { createAthenaClient, fetchMachines, summarizeWorkspaces } from "./api/athenaClient";
 import { readConfig, type AppConfig } from "./config";
 import { ConversationView } from "./components/ConversationView";
+import { JarvisView } from "./components/JarvisView";
 import { MachineButton, MachineSheet, type MachinesLoadState } from "./components/Machines";
 import { MobileTerminal } from "./components/MobileTerminal";
 import { SettingsView, type ConnectionInfo } from "./components/SettingsView";
@@ -45,7 +47,7 @@ import type {
   SnapshotErrors,
 } from "./types";
 
-type Tab = "agents" | "launch" | "history" | "settings";
+type Tab = "jarvis" | "agents" | "launch" | "history" | "settings";
 
 /** How the selected agent is shown: its conversation, or the live terminal. */
 type AgentView = "chat" | "terminal";
@@ -252,6 +254,13 @@ export function App() {
         onConnection={setConnection}
       />
 
+      {tab === "jarvis" && (
+        <main className="content">
+          {/* Jarvis may run on any machine, so it doesn't follow the machine picker. */}
+          <JarvisView config={config} />
+        </main>
+      )}
+
       {tab === "settings" && (
         <main className="content">
           <SettingsView
@@ -292,6 +301,7 @@ export function App() {
       <UsageSheetHost usage={usage} openKey={usageOpenKey} onSelect={setUsageOpenKey} onClose={closeUsage} />
 
       <nav className="tabBar" aria-label="Sections">
+        <TabButton active={tab === "jarvis"} onClick={() => setTab("jarvis")} icon={<AudioLines size={19} />} label="Jarvis" />
         <TabButton active={tab === "agents"} onClick={() => setTab("agents")} icon={<TerminalSquare size={19} />} label="Agents" badge={connection.running ?? 0} />
         <TabButton active={tab === "launch"} onClick={() => setTab("launch")} icon={<Play size={19} />} label="Launch" />
         <TabButton active={tab === "history"} onClick={() => setTab("history")} icon={<History size={19} />} label="History" />
@@ -637,8 +647,8 @@ function MachineConsole({
   const banner = error ?? loadErrorMessage(snapshot);
   const machineName = machine?.name ?? null;
 
-  // Settings belongs to App; keep this machine's state (and its polling) alive underneath.
-  if (tab === "settings") return null;
+  // Settings and Jarvis belong to App; keep this machine's state (and its polling) alive underneath.
+  if (tab === "settings" || tab === "jarvis") return null;
 
   return (
     <>
@@ -1101,7 +1111,7 @@ function folderPlaceholder(machine: MachineRef | null): string {
 
 // "workspaces" was the Spaces tab, folded into Settings.
 function parseTab(value: string): Tab {
-  if (value === "agents" || value === "launch" || value === "history" || value === "settings") return value;
+  if (value === "jarvis" || value === "agents" || value === "launch" || value === "history" || value === "settings") return value;
   return value === "workspaces" ? "settings" : "agents";
 }
 

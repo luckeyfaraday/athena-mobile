@@ -144,7 +144,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
   flex: 0 0 auto;
   padding: 4px 6px calc(env(safe-area-inset-bottom) + 4px);
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  grid-template-columns: repeat(5, 1fr);
   gap: 4px;
   border-top: 1px solid var(--border);
   background: var(--titlebar-bg);
@@ -1147,11 +1147,177 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
   font-size: var(--fs-xs);
 }
 .usageFootnote { margin: 0; color: var(--text-faint); font-size: var(--fs-xs); line-height: 1.45; }
+
+/* ── JARVIS ────────────────────────────────────────────── */
+/* The voice assistant on one of the user's computers: a status header, the
+   conversation as chat (reusing .conversation and .composer), and a talk button. */
+.jarvisView { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.jarvisView .errorBanner { margin-bottom: 4px; }
+.jarvisHead {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border);
+}
+.jarvisHeadText { min-width: 0; flex: 1 1 auto; display: grid; gap: 2px; }
+.jarvisHeadText strong { display: flex; align-items: baseline; gap: 7px; font-size: var(--fs-lg); font-weight: var(--weight-strong); }
+.jarvisHeadText small { overflow: hidden; color: var(--text-muted); font-size: var(--fs-xs); text-overflow: ellipsis; white-space: nowrap; }
+.jarvisStatus { color: var(--text-muted); font-size: var(--fs-sm); font-weight: var(--weight-medium); }
+.jarvisStatus.listening { color: var(--ok); }
+.jarvisStatus.thinking { color: var(--info); }
+.jarvisStatus.speaking { color: var(--accent); }
+.jarvisStatus.connecting { color: var(--warn); }
+.jarvisHeadActions { flex: 0 0 auto; display: flex; align-items: center; gap: 6px; }
+.jarvisToggle.active { border-color: var(--accent-line); background: var(--accent-soft); color: var(--accent); }
+/* The microphone on Jarvis's computer; the phone's own is the composer's talk button. */
+.jarvisMic {
+  height: 34px;
+  padding: 0 10px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-pill);
+  background: var(--surface-2);
+  color: var(--text-muted);
+  font-size: var(--fs-sm);
+  font-weight: var(--weight-medium);
+  white-space: nowrap;
+}
+.jarvisMic.on { border-color: color-mix(in srgb, var(--ok) 45%, transparent); background: var(--ok-soft); color: var(--ok); }
+.jarvisMic:active:not(:disabled) { background: var(--pressed); }
+
+/* Status orb: glows in the activity's color, moving while Jarvis listens, thinks, or speaks. */
+.jarvisOrb {
+  --orb: var(--accent);
+  position: relative;
+  width: 32px;
+  height: 32px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  background: radial-gradient(
+    circle at 34% 30%,
+    var(--orb) 0%,
+    color-mix(in srgb, var(--orb) 72%, transparent) 46%,
+    color-mix(in srgb, var(--orb) 30%, transparent) 100%
+  );
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--orb) 50%, transparent), 0 0 16px color-mix(in srgb, var(--orb) 38%, transparent);
+}
+.jarvisOrb::after { content: ""; position: absolute; inset: -5px; border: 2px solid transparent; border-radius: 50%; }
+.jarvisOrb.idle { opacity: 0.8; }
+.jarvisOrb.listening { --orb: var(--ok); }
+.jarvisOrb.listening::after { border-color: color-mix(in srgb, var(--ok) 65%, transparent); animation: jarvisRing 1.4s ease-out infinite; }
+.jarvisOrb.thinking { --orb: var(--info); }
+.jarvisOrb.thinking::after { border-color: var(--info) transparent transparent; animation: usageSpin 0.9s linear infinite; }
+.jarvisOrb.speaking { animation: jarvisSpeak 0.7s ease-in-out infinite alternate; }
+.jarvisOrb.connecting { --orb: var(--warn); animation: usagePulse 1.2s ease-in-out infinite; }
+.jarvisOrb.offline,
+.jarvisOrb.unlicensed { background: var(--surface-3); box-shadow: 0 0 0 1px var(--border-strong); }
+
+.jarvisTime { align-self: center; margin: 4px 0 0; color: var(--text-faint); font-size: var(--fs-2xs); font-weight: var(--weight-medium); }
+.chatMessage.user.pending { opacity: 0.6; }
+/* Announcements and agent events: compact rows between the bubbles. */
+.jarvisEvent {
+  align-self: center;
+  max-width: 94%;
+  display: inline-flex;
+  align-items: flex-start;
+  gap: 6px;
+  padding: 5px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--surface-2) 60%, transparent);
+  color: var(--text-muted);
+  font-size: var(--fs-xs);
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+.jarvisEvent svg { flex: 0 0 auto; margin-top: 2px; color: var(--accent); }
+.jarvisEvent strong { color: var(--text-2); font-weight: var(--weight-strong); }
+.jarvisEvent.agent { font-family: var(--font-mono); }
+.jarvisEvent.agent svg { color: var(--text-muted); }
+.jarvisTyping { display: inline-flex; gap: 4px; padding: 13px 14px; }
+.jarvisTyping i { width: 6px; height: 6px; border-radius: 50%; background: var(--text-muted); animation: jarvisDot 1.2s ease-in-out infinite; }
+.jarvisTyping i:nth-child(2) { animation-delay: 0.15s; }
+.jarvisTyping i:nth-child(3) { animation-delay: 0.3s; }
+/* What the computer's microphone is hearing right now. */
+.jarvisPartial {
+  flex: 0 0 auto;
+  margin: 0;
+  padding: 7px 12px;
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+  border-top: 1px dashed var(--border-strong);
+  background: var(--surface-1);
+  color: var(--text-2);
+  font-size: var(--fs-sm);
+  font-style: italic;
+  line-height: 1.45;
+}
+.jarvisPartial svg { flex: 0 0 auto; margin-top: 2px; color: var(--ok); }
+.jarvisPartial span { min-width: 0; display: -webkit-box; overflow: hidden; overflow-wrap: anywhere; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+/* One line like a spoken request, growing with longer ones where the browser can. */
+.jarvisComposer textarea { min-height: 40px; field-sizing: content; }
+/* The phone's own microphone, beside Send: hold to talk, or tap and pause. */
+.jarvisTalk {
+  flex: 0 0 auto;
+  width: 40px;
+  height: 40px;
+  display: grid;
+  place-items: center;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--text-2);
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
+}
+.jarvisTalk.listening {
+  border-color: var(--ok);
+  background: var(--ok-soft);
+  color: var(--ok);
+  animation: jarvisListen 1.2s ease-out infinite;
+}
+.jarvisError { color: var(--danger); }
+.jarvisView .emptyState button svg { color: inherit; }
+.jarvisFindings {
+  width: 100%;
+  max-width: 320px;
+  margin: 4px 0 0;
+  padding: 0;
+  display: grid;
+  gap: 1px;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--border);
+  list-style: none;
+  text-align: left;
+}
+.jarvisFindings li { padding: 9px 12px; display: grid; gap: 2px; background: var(--surface-2); }
+.emptyState .jarvisFindings strong { font-family: var(--font-ui); font-size: var(--fs-md); font-weight: var(--weight-strong); }
+.jarvisFindings small { color: var(--text-muted); font-size: var(--fs-xs); line-height: 1.45; }
+@keyframes jarvisRing { from { transform: scale(0.8); opacity: 1; } to { transform: scale(1.3); opacity: 0; } }
+@keyframes jarvisSpeak {
+  to {
+    transform: scale(1.08);
+    box-shadow: 0 0 0 1px color-mix(in srgb, var(--orb) 60%, transparent), 0 0 26px color-mix(in srgb, var(--orb) 60%, transparent);
+  }
+}
+@keyframes jarvisDot { 0%, 60%, 100% { opacity: 0.3; transform: none; } 30% { opacity: 1; transform: translateY(-3px); } }
+@keyframes jarvisListen { from { box-shadow: 0 0 0 0 color-mix(in srgb, var(--ok) 45%, transparent); } to { box-shadow: 0 0 0 10px transparent; } }
+
 .spinning { animation: usageSpin 1s linear infinite; }
 @keyframes usageSpin { to { transform: rotate(360deg); } }
 @keyframes usagePulse { 50% { opacity: 0.35; } }
 @media (prefers-reduced-motion: reduce) {
   .spinning, .usageStatus.status-loading i { animation: none; }
+  .jarvisOrb, .jarvisOrb::after, .jarvisTyping i, .jarvisTalk.listening { animation: none; }
   .usageFill { transition: none; }
   .sheet, .sheetBackdrop { animation: none; }
 }
