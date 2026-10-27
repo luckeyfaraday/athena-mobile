@@ -120,11 +120,17 @@ all your machines and ask Hermes, so this is "talk to Jarvis from anywhere":
 - what Jarvis hears and says, live, as a chat; announcements and agent events
   as compact rows; what its microphone is hearing right now
 - a text field, and a talk button that uses the phone's own speech
-  recognition: hold it and release to send, or tap it and pause
+  recognition (in English, whatever the phone's language): hold it and
+  release to send, or tap it and pause
 - the microphone on Jarvis's computer on or off ("PC mic"), and "Open Jarvis
   on …" when it isn't running there
-- "Read replies aloud" (the speaker button) reads Jarvis's replies to what you
-  asked from the phone in the phone's voice; older replies stay quiet
+- replies in Jarvis's own voice: what you ask from the phone is answered on
+  the phone only, so Jarvis's computer stays quiet, and each sentence plays
+  as soon as it arrives. The speaker button ("Play Jarvis's voice on this
+  phone", on by default) mutes it. A reply that comes without audio (a
+  Jarvis that only sends text, an Athena too old to serve it, or while the
+  event stream is down and the app is polling) shows as text only; the phone
+  never reads replies in a voice of its own
 
 The app finds Jarvis by asking, in order: the `/athena-jarvis` mount (below),
 Athena on the host serving the app, then every ready machine in the machine

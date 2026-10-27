@@ -1,7 +1,8 @@
 // Jarvis, the user's licensed voice assistant, on whichever computer runs it.
 //
 // Athena serves Jarvis on its control API (GET /jarvis, GET /jarvis/events,
-// POST /jarvis/ask|mic|launch), so the phone usually finds it through the
+// GET /jarvis/audio/<turn>/<seq> for replies in Jarvis's voice, POST
+// /jarvis/ask|mic|launch), so the phone usually finds it through the
 // host's own Athena (/athena-control) or another machine's (/athena-remote).
 // This mount is the explicit route: ATHENA_JARVIS_TARGET names one Athena
 // control API, here or on the tailnet, and /athena-jarvis/jarvis… is forwarded

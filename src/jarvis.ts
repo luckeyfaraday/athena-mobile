@@ -6,6 +6,11 @@
 // Athena on that computer serves it on the control API (GET /jarvis,
 // /jarvis/events, POST /jarvis/ask|mic|launch); these types mirror
 // context-workspace client/electron/jarvis-companion.ts.
+//
+// Asked from the phone, Jarvis answers on the phone only: Athena hands back
+// the reply's turn, and Jarvis's own voice arrives sentence by sentence
+// (jarvis-audio events, then /jarvis/audio/<turn>/<seq>) while its computer
+// stays quiet. A reply with no audio shows as text only.
 
 export type JarvisActivity = "idle" | "listening" | "thinking" | "speaking";
 
@@ -29,7 +34,11 @@ export type JarvisAgent = { name: string; cwd: string | null; task: string | nul
  */
 export type JarvisFeedKind = "heard" | "said" | "announce" | "agent" | "asked";
 
-export type JarvisFeedItem = { id: number; at: number; kind: JarvisFeedKind; text: string; agent?: string };
+/** `turn`: the turn Jarvis gave a typed request and its reply, when it names one. */
+export type JarvisFeedItem = { id: number; at: number; kind: JarvisFeedKind; text: string; agent?: string; turn?: string };
+
+/** One sentence of a reply Jarvis spoke for a phone, or (final) the end of it, as Athena announces them. */
+export type JarvisAudioEvent = { turn: string; seq: number; final: boolean; interrupted: boolean };
 
 export type JarvisState = {
   license: JarvisLicense;
@@ -110,6 +119,17 @@ export function jarvisFromBody(body: unknown): JarvisState | null {
   return isRecord(body) ? parseJarvisState(body.jarvis) : null;
 }
 
+/** The turn an ask's answer names (`{ jarvis, turn }`); null from an Athena or Jarvis that predates turns. */
+export function jarvisTurnFromBody(body: unknown): string | null {
+  return isRecord(body) ? text(body.turn) : null;
+}
+
+/** A `jarvis-audio` event's data; null if it isn't one. */
+export function parseJarvisAudioEvent(value: unknown): JarvisAudioEvent | null {
+  if (!isRecord(value) || !text(value.turn) || !Number.isSafeInteger(value.seq) || (value.seq as number) < 0) return null;
+  return { turn: value.turn as string, seq: value.seq as number, final: value.final === true, interrupted: value.interrupted === true };
+}
+
 /** A JarvisState from untrusted JSON, with defaults for fields an older or newer Athena leaves out; null if it isn't one. */
 export function parseJarvisState(value: unknown): JarvisState | null {
   if (!isRecord(value) || !isRecord(value.license) || typeof value.running !== "boolean") return null;
@@ -154,6 +174,7 @@ function parseFeedItem(value: unknown): JarvisFeedItem | null {
   if (!FEED_KINDS.includes(value.kind as JarvisFeedKind)) return null;
   const item: JarvisFeedItem = { id: value.id as number, at: number(value.at) ?? 0, kind: value.kind as JarvisFeedKind, text: value.text };
   if (typeof value.agent === "string") item.agent = value.agent;
+  if (text(value.turn)) item.turn = value.turn as string;
   return item;
 }
 
@@ -388,39 +409,70 @@ export function normalizeSpeech(text: string): string {
     .trim();
 }
 
-// ── Reading replies aloud ──────────────────────────────────────────────────
+// ── Jarvis's voice on the phone ────────────────────────────────────────────
 
 /**
- * Replies are read aloud on the phone only after the user asked something
- * from it: `afterId` is the newest feed id when they asked, and replies that
- * start after `until` are left to the computer's own speaker.
+ * What to do with a `jarvis-audio` event, given the turn of the phone's
+ * latest ask: hold it while the ask hasn't answered (`undefined`), ignore it
+ * when there's no ask or its answer named no turn (`null`), and play only
+ * that turn's: another phone's reply isn't ours.
  */
-export type SpeechGate = { afterId: number; until: number };
-
-/** How long after an ask from the phone a new reply is still read aloud. */
-export const READ_ALOUD_WINDOW_MS = 2 * 60_000;
+export function audioForAsk(turn: string | null | undefined, event: JarvisAudioEvent): "play" | "hold" | "ignore" {
+  if (turn === undefined) return "hold";
+  return turn !== null && event.turn === turn ? "play" : "ignore";
+}
 
 /**
- * Text not yet read aloud: whole replies that arrived after the gate, or the
- * newly streamed sentences of one already being read. `spoken` maps a reply id
- * to how many of its characters were handed to the speaker.
+ * A reply's sentences in the order Jarvis spoke them, though their downloads
+ * finish in any order. Each sentence is announced, then settled with its
+ * decoded audio, or null when it couldn't be fetched (it's skipped). `settle`
+ * and `finish` return what can play now, in order, with no sentence missing
+ * in between. The final marker says how many there were; one never announced
+ * by then is skipped rather than waited for.
  */
-export function unreadReplies(
-  feed: JarvisFeedItem[],
-  gate: SpeechGate | null,
-  spoken: ReadonlyMap<number, number>,
-  now: number,
-): { id: number; text: string; length: number }[] {
-  if (!gate) return [];
-  const replies: { id: number; text: string; length: number }[] = [];
-  for (const item of feed) {
-    if (item.kind !== "said" || item.id <= gate.afterId) continue;
-    const done = spoken.get(item.id);
-    if (done === undefined && now > gate.until) continue;
-    const rest = item.text.slice(done ?? 0).trim();
-    if (rest) replies.push({ id: item.id, text: rest, length: item.text.length });
+export class ReplyAudioQueue<T> {
+  private readonly announced = new Set<number>();
+  private readonly settled = new Map<number, T | null>();
+  private next = 0;
+  private end: number | null = null;
+
+  /** False for a sentence already announced, or one past the end: don't fetch it. */
+  announce(seq: number): boolean {
+    if (seq < this.next || this.announced.has(seq) || (this.end !== null && seq >= this.end)) return false;
+    this.announced.add(seq);
+    return true;
   }
-  return replies;
+
+  settle(seq: number, audio: T | null): T[] {
+    if (!this.announced.has(seq) || seq < this.next) return [];
+    this.settled.set(seq, audio);
+    return this.drain();
+  }
+
+  finish(count: number): T[] {
+    this.end ??= count;
+    return this.drain();
+  }
+
+  /** Every sentence up to the final marker has been handed out or skipped. */
+  get done(): boolean {
+    return this.end !== null && this.next >= this.end;
+  }
+
+  private drain(): T[] {
+    const ready: T[] = [];
+    while (this.end === null || this.next < this.end) {
+      if (this.settled.has(this.next)) {
+        const audio = this.settled.get(this.next) ?? null;
+        this.settled.delete(this.next);
+        if (audio !== null) ready.push(audio);
+      } else if (this.end === null || this.announced.has(this.next)) {
+        break;
+      }
+      this.next += 1;
+    }
+    return ready;
+  }
 }
 
 // ── Utilities ──────────────────────────────────────────────────────────────

@@ -8,6 +8,7 @@ import {
   classifyJarvisProbe,
   jarvisCandidates,
   jarvisFromBody,
+  jarvisTurnFromBody,
   pickJarvis,
   type JarvisFinding,
   type JarvisLocation,
@@ -102,9 +103,26 @@ export async function fetchJarvis(config: AppConfig, location: JarvisLocation): 
   return request(config, location, "/jarvis");
 }
 
-/** Hand Jarvis a typed request; it answers aloud on that computer and in the feed. */
-export async function askJarvis(config: AppConfig, location: JarvisLocation, text: string): Promise<JarvisState> {
-  return request(config, location, "/jarvis/ask", { text });
+/**
+ * Hand Jarvis a typed request. It answers in the feed and, for the phone only,
+ * as audio of its own voice (reply "companion"): its computer stays quiet.
+ * `turn` names that audio; null from an Athena or Jarvis that predates it,
+ * which answers aloud on the computer as before.
+ */
+export async function askJarvis(config: AppConfig, location: JarvisLocation, text: string): Promise<{ state: JarvisState; turn: string | null }> {
+  const { state, body } = await requestWithBody(config, location, "/jarvis/ask", { text, reply: "companion" });
+  return { state, turn: jarvisTurnFromBody(body) };
+}
+
+/** One sentence of a reply in Jarvis's voice, as WAV bytes. Throws when it's gone (404) or unreachable. */
+export async function fetchJarvisAudio(config: AppConfig, location: JarvisLocation, turn: string, seq: number): Promise<ArrayBuffer> {
+  const response = await fetch(`${location.base}/jarvis/audio/${encodeURIComponent(turn)}/${seq}`, {
+    headers: authHeaders(config),
+    cache: "no-store",
+    signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+  });
+  if (!response.ok) throw new JarvisRequestError(`Jarvis's audio isn't there (${response.status})`, response.status, null);
+  return response.arrayBuffer();
 }
 
 /** The microphone on Jarvis's computer, not the phone's. */
@@ -123,6 +141,10 @@ export function jarvisEventsUrl(location: JarvisLocation): string {
 }
 
 async function request(config: AppConfig, location: JarvisLocation, path: string, body?: unknown): Promise<JarvisState> {
+  return (await requestWithBody(config, location, path, body)).state;
+}
+
+async function requestWithBody(config: AppConfig, location: JarvisLocation, path: string, body?: unknown): Promise<{ state: JarvisState; body: unknown }> {
   const response = await fetch(`${location.base}${path}`, {
     method: body === undefined ? "GET" : "POST",
     headers: { "Content-Type": "application/json", ...authHeaders(config) },
@@ -131,7 +153,7 @@ async function request(config: AppConfig, location: JarvisLocation, path: string
   });
   const payload = await response.json().catch(() => null);
   const state = jarvisFromBody(payload);
-  if (response.ok && state) return state;
+  if (response.ok && state) return { state, body: payload };
   const reason = errorText(payload) ?? `${response.status} ${response.statusText}`.trim();
   throw new JarvisRequestError(reason.charAt(0).toUpperCase() + reason.slice(1), response.ok ? 502 : response.status, state);
 }

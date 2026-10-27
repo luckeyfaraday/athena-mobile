@@ -74,6 +74,11 @@ async function fakeAthena() {
         setTimeout(() => req.socket.destroy(), 50);
         return;
       }
+      if (req.url === "/jarvis/audio/t-7/0") {
+        res.writeHead(200, { "content-type": "audio/wav", "content-length": WAV.length, "cache-control": "no-store" });
+        res.end(WAV);
+        return;
+      }
       if (req.url === "/jarvis/ask") {
         res.writeHead(409, { "content-type": "application/json" });
         res.end(JSON.stringify({ error: "Jarvis is not running", jarvis: { running: false } }));
@@ -145,6 +150,19 @@ test("Jarvis's own error answers pass through unchanged", async (t) => {
   assert.deepEqual(await response.json(), { error: "Jarvis is not running", jarvis: { running: false } });
   // No token configured, so none is sent.
   assert.equal(athena.seen[0].headers.authorization, undefined);
+});
+
+// Bytes that aren't valid UTF-8, as a WAV's samples usually aren't.
+const WAV = Buffer.concat([Buffer.from("RIFF\x24\x00\x00\x00WAVE", "latin1"), Buffer.from([0x00, 0xff, 0x80, 0xfe, 0x7f, 0xc3])]);
+
+test("a reply's audio passes through byte for byte", async (t) => {
+  const { base, athena } = await setup(t, { ATHENA_JARVIS_TOKEN: "jarvis-token" });
+  const response = await fetch(`${base}/jarvis/audio/t-7/0`);
+  assert.equal(response.status, 200);
+  assert.equal(response.headers.get("content-type"), "audio/wav");
+  assert.equal(response.headers.get("cache-control"), "no-store");
+  assert.deepEqual(Buffer.from(await response.arrayBuffer()), WAV);
+  assert.equal(athena.seen[0].headers.authorization, "Bearer jarvis-token");
 });
 
 test("the event stream arrives unbuffered", async (t) => {

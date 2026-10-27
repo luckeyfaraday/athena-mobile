@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  ReplyAudioQueue,
+  audioForAsk,
   classifyJarvisProbe,
   findingSummary,
   isGoodFinding,
@@ -9,14 +11,15 @@ import {
   jarvisFromBody,
   jarvisStatus,
   jarvisStatusLabel,
+  jarvisTurnFromBody,
   lastFeedId,
   locationName,
   newerState,
   normalizeSpeech,
   openAsks,
+  parseJarvisAudioEvent,
   parseJarvisState,
   pickJarvis,
-  unreadReplies,
 } from "./jarvis.ts";
 
 const MINUTE = 60_000;
@@ -219,27 +222,72 @@ test("asks from the phone show as pending until Jarvis echoes them", () => {
   // One echo answers one ask.
   assert.equal(openAsks(echoed, [pending[0], { ...pending[0], sentAt: T0 + 3_000 }]).length, 1);
   assert.equal(normalizeSpeech("  What's   the TIME?! "), "whats the time");
+  assert.equal(lastFeedId(echoed), 8);
+  assert.equal(lastFeedId([]), 0);
 });
 
-test("replies are read aloud only after an ask from the phone, sentence by sentence", () => {
-  const feed = [
-    { id: 1, at: T0, kind: "said", text: "Old reply." },
-    { id: 2, at: T0, kind: "asked", text: "weather" },
-    { id: 3, at: T0, kind: "said", text: "It's sunny." },
-    { id: 4, at: T0, kind: "announce", text: "codex is done" },
-  ];
-  const spoken = new Map();
-  assert.deepEqual(unreadReplies(feed, null, spoken, T0), []);
-  const gate = { afterId: 1, until: T0 + 2 * MINUTE };
-  assert.deepEqual(unreadReplies(feed, gate, spoken, T0), [{ id: 3, text: "It's sunny.", length: 11 }]);
-  spoken.set(3, 11);
-  assert.deepEqual(unreadReplies(feed, gate, spoken, T0), []);
-  // The reply grows with the next sentence: only that is new.
-  feed[2] = { ...feed[2], text: "It's sunny. High of 21." };
-  assert.deepEqual(unreadReplies(feed, gate, spoken, T0), [{ id: 3, text: "High of 21.", length: 23 }]);
-  // A reply in progress keeps going after the window; a new one past it doesn't start.
-  const later = [...feed.slice(0, 2), { ...feed[2], text: "It's sunny. High of 21. Low of 9." }, { id: 5, at: T0, kind: "said", text: "Unrelated." }];
-  assert.deepEqual(unreadReplies(later, gate, spoken, T0 + 5 * MINUTE), [{ id: 3, text: "It's sunny. High of 21. Low of 9.".slice(11).trim(), length: 33 }]);
-  assert.equal(lastFeedId(later), 5);
-  assert.equal(lastFeedId([]), 0);
+test("an ask's answer names its reply's turn, and the stream announces its sentences", () => {
+  assert.equal(jarvisTurnFromBody({ jarvis: jarvis(), turn: "t-7" }), "t-7");
+  assert.equal(jarvisTurnFromBody({ jarvis: jarvis() }), null, "an older Athena or Jarvis names none");
+  assert.equal(jarvisTurnFromBody({ jarvis: jarvis(), turn: null }), null);
+  assert.equal(jarvisTurnFromBody(null), null);
+  assert.deepEqual(parseJarvisAudioEvent({ turn: "t-7", seq: 0, final: false, interrupted: false }), { turn: "t-7", seq: 0, final: false, interrupted: false });
+  assert.deepEqual(parseJarvisAudioEvent({ turn: "t-7", seq: 3, final: true }), { turn: "t-7", seq: 3, final: true, interrupted: false });
+  for (const bad of [null, { seq: 0 }, { turn: "", seq: 0 }, { turn: "t", seq: -1 }, { turn: "t", seq: 1.5 }, { turn: "t", seq: "0" }]) {
+    assert.equal(parseJarvisAudioEvent(bad), null, JSON.stringify(bad));
+  }
+  // Feed items keep the turn Athena gives them.
+  const state = parseJarvisState(jarvis({ feed: [{ id: 1, at: T0, kind: "said", text: "Sunny.", turn: "t-7" }, { id: 2, at: T0, kind: "said", text: "Hi.", turn: "" }] }));
+  assert.deepEqual(state.feed.map((item) => item.turn), ["t-7", undefined]);
+});
+
+test("only the phone's own reply is played, and audio that beats the ask's answer waits for it", () => {
+  const sentence = (turn, seq) => ({ turn, seq, final: false, interrupted: false });
+  assert.equal(audioForAsk(undefined, sentence("t-7", 0)), "hold");
+  assert.equal(audioForAsk("t-7", sentence("t-7", 0)), "play");
+  assert.equal(audioForAsk("t-7", sentence("t-8", 0)), "ignore", "another phone's reply");
+  assert.equal(audioForAsk(null, sentence("t-7", 0)), "ignore", "nothing asked, or no turn named");
+});
+
+test("a reply's sentences play in order, each once, however their downloads finish", () => {
+  const queue = new ReplyAudioQueue();
+  assert.equal(queue.announce(0), true);
+  assert.equal(queue.announce(1), true);
+  assert.equal(queue.announce(2), true);
+  assert.equal(queue.announce(1), false, "announced twice: fetched once");
+  // Sentence 1 downloads first, but waits for 0.
+  assert.deepEqual(queue.settle(1, "one"), []);
+  assert.deepEqual(queue.settle(0, "zero"), ["zero", "one"]);
+  assert.equal(queue.announce(0), false, "already played");
+  assert.deepEqual(queue.settle(0, "zero again"), [], "never played twice");
+  // A sentence that couldn't be fetched is skipped.
+  assert.equal(queue.announce(3), true);
+  assert.deepEqual(queue.settle(3, "three"), []);
+  assert.deepEqual(queue.settle(2, null), ["three"]);
+  assert.equal(queue.done, false, "no final marker yet");
+  assert.deepEqual(queue.finish(4), []);
+  assert.equal(queue.done, true);
+  assert.equal(queue.announce(4), false, "nothing after the end");
+});
+
+test("the final marker skips sentences that were never announced", () => {
+  const queue = new ReplyAudioQueue();
+  queue.announce(0);
+  queue.announce(2);
+  assert.deepEqual(queue.settle(2, "two"), []);
+  assert.deepEqual(queue.settle(0, "zero"), ["zero"], "1 may still be coming");
+  // Jarvis spoke three sentences; 1 never reached the phone.
+  assert.deepEqual(queue.finish(3), ["two"]);
+  assert.equal(queue.done, true);
+  // One still downloading at the end is waited for.
+  const late = new ReplyAudioQueue();
+  late.announce(0);
+  late.announce(1);
+  assert.deepEqual(late.finish(2), []);
+  assert.deepEqual(late.settle(1, "one"), []);
+  assert.deepEqual(late.settle(0, "zero"), ["zero", "one"]);
+  // An empty reply (cut off at once) is done straight away.
+  const empty = new ReplyAudioQueue();
+  assert.deepEqual(empty.finish(0), []);
+  assert.equal(empty.done, true);
 });

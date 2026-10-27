@@ -31,13 +31,15 @@ import {
   askJarvis,
   discoverJarvis,
   fetchJarvis,
+  fetchJarvisAudio,
   jarvisEventsUrl,
   launchJarvis,
   setJarvisMic,
   type JarvisSearch,
 } from "../api/jarvisClient";
 import {
-  READ_ALOUD_WINDOW_MS,
+  ReplyAudioQueue,
+  audioForAsk,
   findingSummary,
   isGoodFinding,
   jarvisChat,
@@ -47,20 +49,21 @@ import {
   locationName,
   newerState,
   openAsks,
+  parseJarvisAudioEvent,
   parseJarvisState,
-  unreadReplies,
+  type JarvisAudioEvent,
   type JarvisChatItem,
   type JarvisLocation,
   type JarvisState,
   type PendingAsk,
-  type SpeechGate,
 } from "../jarvis";
 
 // Jarvis, the user's voice assistant on one of their computers, from anywhere:
 // its live state (an event stream, or polling when that fails), the
 // conversation as chat, and a composer that types to it or, through the
-// phone's own speech recognition, talks to it. Everything stops while the
-// screen is closed or the app is in the background.
+// phone's own speech recognition, talks to it. Jarvis answers what's asked
+// here in its own voice, on the phone. Everything stops while the screen is
+// closed or the app is in the background.
 
 const POLL_MS = 2_000;
 // While polling covers for a failed stream, the stream is retried this often (doubling).
@@ -84,16 +87,20 @@ const STORAGE_KEYS = {
   location: "athena.jarvisLocation",
   state: "athena.jarvisState",
   // Only an explicit choice is stored; the first release stored its "off"
-  // default on mount, so it moved to a new key with "on" as the default.
-  readAloud: "athena.jarvisSpeakReplies",
+  // default on mount, so it moved to a new key with "on" as the default. It
+  // was "read replies aloud" and is now Jarvis's own voice, same choice.
+  voice: "athena.jarvisSpeakReplies",
 } as const;
 
 export function JarvisView({ config }: { config: AppConfig }) {
-  const link = useJarvisLink(config);
+  // The stream's jarvis-audio events go to the voice hook, made below.
+  const hearAudio = useRef<(event: JarvisAudioEvent) => void>(() => undefined);
+  const link = useJarvisLink(config, hearAudio);
   const { location, state, live } = link;
   const name = location ? locationName(location, state) : null;
   const status = jarvisStatus(state, live);
-  const readAloud = useReadAloud(state, location?.base ?? null);
+  const voice = useJarvisVoice(config, location);
+  hearAudio.current = voice.hear;
 
   const [pending, setPending] = useState<PendingAsk[]>([]);
   const [sending, setSending] = useState(false);
@@ -138,13 +145,15 @@ export function JarvisView({ config }: { config: AppConfig }) {
     setActionError(null);
     const ask: PendingAsk = { text: trimmed, afterId: lastFeedId(state?.feed ?? []), sentAt: Date.now() };
     setPending((current) => [...current, ask]);
-    readAloud.arm(ask.afterId);
+    voice.arm();
     setDraft("");
     try {
-      link.receive(await askJarvis(config, location, trimmed));
+      const asked = await askJarvis(config, location, trimmed);
+      link.receive(asked.state);
+      voice.answered(asked.turn);
     } catch (error) {
       setPending((current) => current.filter((entry) => entry !== ask));
-      readAloud.disarm();
+      voice.disarm();
       // Keep the words so they can be sent again.
       setDraft((current) => current || trimmed);
       if (error instanceof JarvisRequestError && error.state) link.receive(error.state);
@@ -169,11 +178,11 @@ export function JarvisView({ config }: { config: AppConfig }) {
     draftBeforeTalk.current = draft;
     setHeard("");
     setActionError(null);
-    // The phone shouldn't hear itself reading the last reply.
-    readAloud.silence();
+    // The phone shouldn't hear Jarvis's last reply while it listens.
+    voice.silence();
     // The spoken request is sent after this tap ends, too late for iOS to
-    // allow speech; unlocking now lets the reply be read out.
-    readAloud.prime();
+    // allow audio; unlocking now lets Jarvis's reply play.
+    voice.prime();
     talk.start();
   };
 
@@ -310,16 +319,16 @@ export function JarvisView({ config }: { config: AppConfig }) {
           <small>{[`on ${name}`, state.model ?? state.provider].filter(Boolean).join(" · ")}</small>
         </div>
         <div className="jarvisHeadActions">
-          {readAloud.supported && (
+          {voice.supported && (
             <button
               type="button"
-              className={readAloud.enabled ? "iconButton jarvisToggle active" : "iconButton jarvisToggle"}
-              aria-pressed={readAloud.enabled}
-              aria-label="Read replies aloud on this phone"
-              title="Read replies aloud on this phone"
-              onClick={readAloud.toggle}
+              className={voice.enabled ? "iconButton jarvisToggle active" : "iconButton jarvisToggle"}
+              aria-pressed={voice.enabled}
+              aria-label="Play Jarvis's voice on this phone"
+              title="Play Jarvis's voice on this phone"
+              onClick={voice.toggle}
             >
-              {readAloud.enabled ? <Volume2 size={16} /> : <VolumeX size={16} />}
+              {voice.enabled ? <Volume2 size={16} /> : <VolumeX size={16} />}
             </button>
           )}
           <button
@@ -534,7 +543,7 @@ function JarvisMissing({ search, searching, onSearch }: { search: JarvisSearch |
  * it showed) is remembered, so reopening paints at once and asks there first.
  * Live updates run only while this screen is open and the app is in front.
  */
-function useJarvisLink(config: AppConfig) {
+function useJarvisLink(config: AppConfig, onAudio: { current: (event: JarvisAudioEvent) => void }) {
   const saved = useMemo(loadSaved, []);
   const [location, setLocation] = useState<JarvisLocation | null>(saved.location);
   const [state, setState] = useState<JarvisState | null>(saved.state);
@@ -660,6 +669,11 @@ function useJarvisLink(config: AppConfig) {
         window.clearTimeout(pollTimer);
         apply(next);
       });
+      // A sentence of a reply in Jarvis's own voice, for the phone to fetch and play.
+      current.addEventListener("jarvis-audio", (event) => {
+        const audio = parseJarvisAudioEvent(parseJson((event as MessageEvent<string>).data));
+        if (audio && source === current) onAudio.current(audio);
+      });
       // A dropped or refused stream: poll instead, and try the stream again later.
       current.addEventListener("error", () => {
         if (source !== current) return;
@@ -693,102 +707,200 @@ function useJarvisLink(config: AppConfig) {
   return { location, state, live, search, searching, lost, searchAgain, receive };
 }
 
-// ── Reading replies aloud on the phone ──────────────────────────────────────
+// ── Jarvis's voice on the phone ─────────────────────────────────────────────
+
+/** The reply to the phone's latest ask, while its sentences arrive. */
+type PhoneReply = {
+  /** Its turn: undefined until the ask answers, null when it names none. */
+  turn: string | null | undefined;
+  queue: ReplyAudioQueue<AudioBuffer>;
+  /** Audio announced before the ask answered, held until it does. */
+  early: JarvisAudioEvent[];
+};
+
+const EARLY_AUDIO_MAX = 64;
 
 /**
- * Speaks Jarvis's new replies with the phone's own voice, but only replies to
- * something asked from this phone (see SpeechGate), never old history.
+ * Plays Jarvis's own voice for its replies to what was asked from this phone:
+ * Jarvis keeps its computer quiet for them and sends each sentence as audio,
+ * fetched as it's announced and played straight after the one before. A reply
+ * without audio (a text-only Jarvis, an Athena without the audio route, no
+ * event stream) shows as text only; the phone has no voice of its own.
  */
-function useReadAloud(state: JarvisState | null, base: string | null) {
-  const supported = typeof window !== "undefined" && "speechSynthesis" in window;
-  // On by default: asking from the phone usually means listening on it too.
-  const [enabled, setEnabled] = useState(() => supported && loadPersisted<boolean>(STORAGE_KEYS.readAloud, true) !== false);
-  const gate = useRef<SpeechGate | null>(null);
-  const spoken = useRef(new Map<number, number>());
+function useJarvisVoice(config: AppConfig, location: JarvisLocation | null) {
+  const player = useMemo(() => new VoicePlayer(), []);
+  // On by default: asking from the phone means listening on it, as the computer stays quiet.
+  const [enabled, setEnabled] = useState(() => player.supported && loadPersisted<boolean>(STORAGE_KEYS.voice, true) !== false);
+  const reply = useRef<PhoneReply | null>(null);
+  const latest = useRef({ config, location, enabled });
+  latest.current = { config, location, enabled };
 
-  useEffect(() => {
-    gate.current = null;
-    spoken.current = new Map();
-  }, [base]);
-  useEffect(() => {
-    if (!state) return;
-    // Athena restarted and its feed ids started over; nothing new is ours.
-    if (gate.current && lastFeedId(state.feed) < gate.current.afterId) gate.current = null;
-    for (const reply of unreadReplies(state.feed, gate.current, spoken.current, Date.now())) {
-      spoken.current.set(reply.id, reply.length);
-      if (enabled) speak(reply.text);
-    }
-  }, [state, enabled]);
-  useEffect(
-    () => () => {
-      if (supported) window.speechSynthesis.cancel();
+  // Hand out what can play, unless a newer ask (or talking) replaced the reply.
+  const play = useCallback(
+    (voicing: PhoneReply, buffers: AudioBuffer[]) => {
+      if (reply.current !== voicing) return;
+      for (const buffer of buffers) player.play(buffer);
     },
-    [supported],
+    [player],
   );
 
+  const voice = useCallback(
+    (voicing: PhoneReply, event: JarvisAudioEvent) => {
+      const { config, location, enabled } = latest.current;
+      if (!location || !enabled) return;
+      if (event.final && event.interrupted) {
+        // Jarvis was cut off: so is the phone.
+        player.stop();
+        reply.current = null;
+        return;
+      }
+      if (event.final) return play(voicing, voicing.queue.finish(event.seq));
+      if (!voicing.queue.announce(event.seq)) return;
+      void fetchJarvisAudio(config, location, event.turn, event.seq)
+        .then((bytes) => player.decode(bytes))
+        .then(
+          (buffer) => play(voicing, voicing.queue.settle(event.seq, buffer)),
+          // Gone or undecodable: that sentence is skipped, the rest still play.
+          () => play(voicing, voicing.queue.settle(event.seq, null)),
+        );
+    },
+    [play, player],
+  );
+
+  useEffect(() => {
+    reply.current = null;
+    player.stop();
+  }, [location?.base, player]);
+  useEffect(() => () => player.close(), [player]);
+
   return {
-    supported,
+    supported: player.supported,
     enabled,
     toggle: () => {
-      if (!supported) return;
-      if (enabled) window.speechSynthesis.cancel();
-      else unlockSpeech();
-      persist(STORAGE_KEYS.readAloud, !enabled);
+      if (!player.supported) return;
+      if (enabled) player.stop();
+      else player.unlock();
+      persist(STORAGE_KEYS.voice, !enabled);
       setEnabled(!enabled);
     },
-    /** Called from the tap that asks, which also lets a phone browser speak later. */
-    arm: (afterId: number) => {
-      gate.current = { afterId, until: Date.now() + READ_ALOUD_WINDOW_MS };
-      if (enabled) unlockSpeech();
+    /** Called from the tap that asks, which also lets the phone play audio later. */
+    arm: () => {
+      player.stop();
+      reply.current = { turn: undefined, queue: new ReplyAudioQueue<AudioBuffer>(), early: [] };
+      if (enabled) player.unlock();
+    },
+    /** The ask's answer: the turn its reply's audio will carry, or null when none will come. */
+    answered: (turn: string | null) => {
+      const voicing = reply.current;
+      if (!voicing || voicing.turn !== undefined) return;
+      voicing.turn = turn;
+      const held = voicing.early;
+      voicing.early = [];
+      for (const event of held) if (audioForAsk(turn, event) === "play") voice(voicing, event);
     },
     disarm: () => {
-      gate.current = null;
+      reply.current = null;
     },
+    /** A `jarvis-audio` event from the stream. */
+    hear: (event: JarvisAudioEvent) => {
+      const voicing = reply.current;
+      const action = audioForAsk(voicing ? voicing.turn : null, event);
+      if (!voicing || action === "ignore") return;
+      if (action === "hold") voicing.early = [...voicing.early, event].slice(-EARLY_AUDIO_MAX);
+      else voice(voicing, event);
+    },
+    /** Talking: the phone mustn't hear itself, and the reply being played is over. */
     silence: () => {
-      if (supported) window.speechSynthesis.cancel();
+      player.stop();
+      reply.current = null;
     },
-    /** For taps that ask later (talking): unlock speech while it's still a tap. */
+    /** For taps that ask later (talking): unlock audio while it's still a tap. */
     prime: () => {
-      if (enabled) unlockSpeech();
+      if (enabled) player.unlock();
     },
   };
 }
 
-// Jarvis talks and listens in English whatever the phone's own language is: a
-// Spanish iPhone would otherwise transcribe English as Spanish and read his
-// replies with a Spanish voice.
+// Scheduling a sentence this far ahead keeps its first samples from being clipped.
+const START_LEAD_S = 0.05;
+
+/**
+ * Plays reply sentences back to back through one AudioContext. Phone browsers
+ * (iOS above all) only let audio start from a tap, so the context is made or
+ * resumed during one and plays a moment of silence; after that, sentences can
+ * start whenever they arrive.
+ */
+class VoicePlayer {
+  readonly supported = audioContextConstructor() !== null;
+  private context: AudioContext | null = null;
+  private readonly playing = new Set<AudioBufferSourceNode>();
+  // When the last scheduled sentence ends, in the context's clock.
+  private until = 0;
+
+  unlock(): void {
+    const Context = audioContextConstructor();
+    if (!Context) return;
+    try {
+      this.context ??= new Context();
+      void this.context.resume().catch(() => undefined);
+      const silence = this.context.createBufferSource();
+      silence.buffer = this.context.createBuffer(1, 1, this.context.sampleRate);
+      silence.connect(this.context.destination);
+      silence.start();
+    } catch {
+      // No Web Audio after all: replies show as text.
+    }
+  }
+
+  decode(bytes: ArrayBuffer): Promise<AudioBuffer> {
+    if (!this.context) return Promise.reject(new Error("audio wasn't unlocked by a tap"));
+    return this.context.decodeAudioData(bytes);
+  }
+
+  /** Start a sentence the moment the one before it ends (or now, after a gap). */
+  play(buffer: AudioBuffer): void {
+    const context = this.context;
+    if (!context) return;
+    // iOS suspends the context while the app is in the background.
+    if (context.state !== "running") void context.resume().catch(() => undefined);
+    const source = context.createBufferSource();
+    source.buffer = buffer;
+    source.connect(context.destination);
+    const at = Math.max(this.until, context.currentTime + START_LEAD_S);
+    source.onended = () => this.playing.delete(source);
+    source.start(at);
+    this.playing.add(source);
+    this.until = at + buffer.duration;
+  }
+
+  stop(): void {
+    for (const source of this.playing) {
+      try {
+        source.stop();
+      } catch {
+        // already ended
+      }
+    }
+    this.playing.clear();
+    this.until = 0;
+  }
+
+  close(): void {
+    this.stop();
+    void this.context?.close().catch(() => undefined);
+    this.context = null;
+  }
+}
+
+function audioContextConstructor(): typeof AudioContext | null {
+  if (typeof window === "undefined") return null;
+  const scope = window as unknown as { AudioContext?: typeof AudioContext; webkitAudioContext?: typeof AudioContext };
+  return scope.AudioContext ?? scope.webkitAudioContext ?? null;
+}
+
+// Jarvis listens in English whatever the phone's own language is: a Spanish
+// iPhone would otherwise transcribe English as Spanish.
 const JARVIS_LISTEN_LANG = "en-US";
-const JARVIS_SPEAK_LANG = "en-GB";
-
-// The closest phone voice to Jarvis's British George: a male en-GB voice
-// (Daniel on iPhone), else any en-GB voice, else any English one.
-function jarvisVoice(): SpeechSynthesisVoice | null {
-  const voices = window.speechSynthesis.getVoices();
-  const british = voices.filter((voice) => voice.lang.replace("_", "-").toLowerCase() === "en-gb");
-  return (
-    british.find((voice) => /daniel|arthur|george|male/i.test(voice.name)) ??
-    british[0] ??
-    voices.find((voice) => voice.lang.toLowerCase().startsWith("en")) ??
-    null
-  );
-}
-
-function speak(text: string): void {
-  const utterance = new SpeechSynthesisUtterance(text);
-  const voice = jarvisVoice();
-  if (voice) utterance.voice = voice;
-  utterance.lang = voice?.lang ?? JARVIS_SPEAK_LANG;
-  // iOS can leave the synthesizer paused after the app was backgrounded.
-  window.speechSynthesis.resume();
-  window.speechSynthesis.speak(utterance);
-}
-
-// Mobile browsers only speak after the page has spoken once during a tap.
-function unlockSpeech(): void {
-  const utterance = new SpeechSynthesisUtterance(" ");
-  utterance.volume = 0;
-  window.speechSynthesis.speak(utterance);
-}
 
 // ── Talking with the phone's speech recognition ─────────────────────────────
 
