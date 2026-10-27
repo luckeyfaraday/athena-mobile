@@ -83,7 +83,9 @@ const MISSING_RECHECK_MS = 30_000;
 const STORAGE_KEYS = {
   location: "athena.jarvisLocation",
   state: "athena.jarvisState",
-  readAloud: "athena.jarvisReadAloud",
+  // Only an explicit choice is stored; the first release stored its "off"
+  // default on mount, so it moved to a new key with "on" as the default.
+  readAloud: "athena.jarvisSpeakReplies",
 } as const;
 
 export function JarvisView({ config }: { config: AppConfig }) {
@@ -169,6 +171,9 @@ export function JarvisView({ config }: { config: AppConfig }) {
     setActionError(null);
     // The phone shouldn't hear itself reading the last reply.
     readAloud.silence();
+    // The spoken request is sent after this tap ends, too late for iOS to
+    // allow speech; unlocking now lets the reply be read out.
+    readAloud.prime();
     talk.start();
   };
 
@@ -696,11 +701,11 @@ function useJarvisLink(config: AppConfig) {
  */
 function useReadAloud(state: JarvisState | null, base: string | null) {
   const supported = typeof window !== "undefined" && "speechSynthesis" in window;
-  const [enabled, setEnabled] = useState(() => supported && loadPersisted<boolean>(STORAGE_KEYS.readAloud, false) === true);
+  // On by default: asking from the phone usually means listening on it too.
+  const [enabled, setEnabled] = useState(() => supported && loadPersisted<boolean>(STORAGE_KEYS.readAloud, true) !== false);
   const gate = useRef<SpeechGate | null>(null);
   const spoken = useRef(new Map<number, number>());
 
-  useEffect(() => persist(STORAGE_KEYS.readAloud, enabled), [enabled]);
   useEffect(() => {
     gate.current = null;
     spoken.current = new Map();
@@ -728,6 +733,7 @@ function useReadAloud(state: JarvisState | null, base: string | null) {
       if (!supported) return;
       if (enabled) window.speechSynthesis.cancel();
       else unlockSpeech();
+      persist(STORAGE_KEYS.readAloud, !enabled);
       setEnabled(!enabled);
     },
     /** Called from the tap that asks, which also lets a phone browser speak later. */
@@ -741,12 +747,18 @@ function useReadAloud(state: JarvisState | null, base: string | null) {
     silence: () => {
       if (supported) window.speechSynthesis.cancel();
     },
+    /** For taps that ask later (talking): unlock speech while it's still a tap. */
+    prime: () => {
+      if (enabled) unlockSpeech();
+    },
   };
 }
 
 function speak(text: string): void {
   const utterance = new SpeechSynthesisUtterance(text);
   utterance.lang = navigator.language || "en-US";
+  // iOS can leave the synthesizer paused after the app was backgrounded.
+  window.speechSynthesis.resume();
   window.speechSynthesis.speak(utterance);
 }
 
