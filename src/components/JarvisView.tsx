@@ -754,9 +754,30 @@ function useReadAloud(state: JarvisState | null, base: string | null) {
   };
 }
 
+// Jarvis talks and listens in English whatever the phone's own language is: a
+// Spanish iPhone would otherwise transcribe English as Spanish and read his
+// replies with a Spanish voice.
+const JARVIS_LISTEN_LANG = "en-US";
+const JARVIS_SPEAK_LANG = "en-GB";
+
+// The closest phone voice to Jarvis's British George: a male en-GB voice
+// (Daniel on iPhone), else any en-GB voice, else any English one.
+function jarvisVoice(): SpeechSynthesisVoice | null {
+  const voices = window.speechSynthesis.getVoices();
+  const british = voices.filter((voice) => voice.lang.replace("_", "-").toLowerCase() === "en-gb");
+  return (
+    british.find((voice) => /daniel|arthur|george|male/i.test(voice.name)) ??
+    british[0] ??
+    voices.find((voice) => voice.lang.toLowerCase().startsWith("en")) ??
+    null
+  );
+}
+
 function speak(text: string): void {
   const utterance = new SpeechSynthesisUtterance(text);
-  utterance.lang = navigator.language || "en-US";
+  const voice = jarvisVoice();
+  if (voice) utterance.voice = voice;
+  utterance.lang = voice?.lang ?? JARVIS_SPEAK_LANG;
   // iOS can leave the synthesizer paused after the app was backgrounded.
   window.speechSynthesis.resume();
   window.speechSynthesis.speak(utterance);
@@ -809,7 +830,7 @@ function useTalk(handlers: { onHeard: (text: string) => void; onDone: (text: str
   const start = useCallback(() => {
     if (!Recognition || active.current) return;
     const recognition = new Recognition();
-    recognition.lang = navigator.language || "en-US";
+    recognition.lang = JARVIS_LISTEN_LANG;
     recognition.interimResults = true;
     recognition.continuous = false;
     recognition.maxAlternatives = 1;
