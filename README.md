@@ -117,6 +117,12 @@ The Jarvis tab talks to Jarvis, the voice assistant on one of your computers,
 through Athena there (`/jarvis` on its control API). Jarvis can drive agents on
 all your machines and ask Hermes, so this is "talk to Jarvis from anywhere":
 
+- Jarvis's orb from its desktop HUD (vendored in `src/vendor/jarvis-orb`):
+  large above a short conversation, small in the header once it grows or the
+  keyboard opens. It listens, thinks and speaks as Jarvis does, moves with
+  Jarvis's voice and microphone levels at the computer and with its voice
+  playing on the phone, and draws only while it's on screen (a breathing disc
+  where WebGL2 isn't available)
 - what Jarvis hears and says, live, as a chat; announcements and agent events
   as compact rows; what its microphone is hearing right now
 - a text field, and a talk button that uses the phone's own speech

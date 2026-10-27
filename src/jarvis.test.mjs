@@ -9,6 +9,7 @@ import {
   jarvisCandidates,
   jarvisChat,
   jarvisFromBody,
+  jarvisOrbState,
   jarvisStatus,
   jarvisStatusLabel,
   jarvisTurnFromBody,
@@ -17,9 +18,13 @@ import {
   newerState,
   normalizeSpeech,
   openAsks,
+  orbIsHero,
   parseJarvisAudioEvent,
+  parseJarvisLevels,
   parseJarvisState,
   pickJarvis,
+  smoothLevel,
+  voiceLevel,
 } from "./jarvis.ts";
 
 const MINUTE = 60_000;
@@ -290,4 +295,46 @@ test("the final marker skips sentences that were never announced", () => {
   const empty = new ReplyAudioQueue();
   assert.deepEqual(empty.finish(0), []);
   assert.equal(empty.done, true);
+});
+
+test("the orb shows what Jarvis is doing, as the desktop HUD does, with the phone in the loop", () => {
+  const phone = (overrides = {}) => ({ micOpen: true, playing: false, dictating: false, ...overrides });
+  assert.equal(jarvisOrbState("idle", phone()), "idle");
+  assert.equal(jarvisOrbState("listening", phone()), "hearing");
+  assert.equal(jarvisOrbState("thinking", phone()), "thinking");
+  assert.equal(jarvisOrbState("speaking", phone()), "speaking");
+  for (const away of ["offline", "unlicensed", "connecting"]) assert.equal(jarvisOrbState(away, phone({ playing: true })), "muted", away);
+  // Speaking beats thinking beats hearing, as on the HUD.
+  assert.equal(jarvisOrbState("thinking", phone({ playing: true })), "speaking", "Jarvis's voice playing here");
+  assert.equal(jarvisOrbState("thinking", phone({ dictating: true })), "thinking");
+  assert.equal(jarvisOrbState("idle", phone({ dictating: true })), "hearing", "the phone taking dictation");
+  // The computer's microphone off: asleep while idle, but the phone still talks to Jarvis.
+  assert.equal(jarvisOrbState("idle", phone({ micOpen: false })), "muted");
+  assert.equal(jarvisOrbState("idle", phone({ micOpen: null })), "idle");
+  assert.equal(jarvisOrbState("speaking", phone({ micOpen: false })), "speaking");
+  assert.equal(jarvisOrbState("idle", phone({ micOpen: false, dictating: true })), "hearing");
+});
+
+test("levels read on Jarvis's own scale, swell at once and fall back gently", () => {
+  assert.deepEqual(parseJarvisLevels({ out: 0.42, mic: 0 }), { out: 0.42, mic: 0 });
+  assert.deepEqual(parseJarvisLevels({ out: 3, mic: -1 }), { out: 1, mic: 0 });
+  assert.equal(parseJarvisLevels({ out: 0.4 }), null);
+  assert.equal(parseJarvisLevels({ out: "loud", mic: 0 }), null);
+  assert.equal(parseJarvisLevels(null), null);
+  // RMS times 6, at most 1: a 0.1-amplitude square wave reads 0.6, like Jarvis's tts.level.
+  assert.equal(voiceLevel([]), 0);
+  assert.equal(Number(voiceLevel([0.1, -0.1, 0.1, -0.1]).toFixed(6)), 0.6);
+  assert.equal(voiceLevel([0.9, -0.9]), 1);
+  assert.equal(smoothLevel(0.2, 0.7), 0.7, "up at once");
+  assert.equal(Number(smoothLevel(0.7, 0.2).toFixed(6)), 0.6, "down by a fifth of the gap");
+  assert.equal(Number(smoothLevel(0.7, 0.2, 0.5).toFixed(6)), 0.45);
+});
+
+test("the orb stands large while the conversation fits under it and the keyboard is down", () => {
+  const layout = (overrides = {}) => ({ keyboardOpen: false, contentHeight: 300, roomHeight: 600, heroHeight: 196, ...overrides });
+  assert.equal(orbIsHero(layout()), true);
+  assert.equal(orbIsHero(layout({ contentHeight: 404 })), true, "just fits");
+  assert.equal(orbIsHero(layout({ contentHeight: 405 })), false, "the conversation outgrew it");
+  assert.equal(orbIsHero(layout({ keyboardOpen: true })), false);
+  assert.equal(orbIsHero(layout({ roomHeight: 400 })), false, "a short screen");
 });

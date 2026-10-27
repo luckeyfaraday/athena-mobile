@@ -475,7 +475,66 @@ export class ReplyAudioQueue<T> {
   }
 }
 
+// ── The orb ────────────────────────────────────────────────────────────────
+
+/** The desktop HUD orb's states: away or asleep, waiting, hearing the user, thinking, speaking. */
+export type JarvisOrbState = "muted" | "idle" | "hearing" | "thinking" | "speaking";
+
+/** Jarvis's voice (`out`) and what its microphone hears (`mic`), 0..1, from Athena's `jarvis-level` events. */
+export type JarvisLevels = { out: number; mic: number };
+
+/**
+ * The orb's state as the HUD derives it (speaking over thinking over hearing
+ * over idle; muted while Jarvis isn't there or its microphone is off), with
+ * the phone in the loop: Jarvis's voice playing here is speaking, and the
+ * phone's own dictation is hearing. Unlike the HUD, a closed microphone on
+ * the computer only quiets an idle orb, since the phone still talks to Jarvis.
+ */
+export function jarvisOrbState(status: JarvisStatus, phone: { micOpen: boolean | null; playing: boolean; dictating: boolean }): JarvisOrbState {
+  if (status === "offline" || status === "unlicensed" || status === "connecting") return "muted";
+  if (phone.playing || status === "speaking") return "speaking";
+  if (status === "thinking") return "thinking";
+  if (phone.dictating || status === "listening") return "hearing";
+  return phone.micOpen === false ? "muted" : "idle";
+}
+
+/** A `jarvis-level` event's data, clamped to 0..1; null if it isn't one. */
+export function parseJarvisLevels(value: unknown): JarvisLevels | null {
+  if (!isRecord(value)) return null;
+  const out = number(value.out);
+  const mic = number(value.mic);
+  return out === null || mic === null ? null : { out: clampLevel(out), mic: clampLevel(mic) };
+}
+
+/** A level on Jarvis's own scale: the samples' RMS (they run -1..1) times 6, at most 1, as jarvis/system_audio.py measures. */
+export function voiceLevel(samples: ArrayLike<number>): number {
+  if (samples.length === 0) return 0;
+  let sum = 0;
+  for (let index = 0; index < samples.length; index += 1) sum += samples[index] * samples[index];
+  return clampLevel(Math.sqrt(sum / samples.length) * 6);
+}
+
+/** Up at once, down gently: the orb swells with each syllable without flickering between them. */
+export function smoothLevel(previous: number, sample: number, release = 0.8): number {
+  return sample >= previous ? sample : previous * release + sample * (1 - release);
+}
+
+/**
+ * Whether the orb stands large above the conversation or sits small in the
+ * header: large while the conversation (`contentHeight`) fits under it and the
+ * keyboard is closed. `roomHeight` is the space the conversation and the large
+ * orb share, which stays the same as one grows and the other shrinks, so the
+ * answer doesn't flip back and forth while the orb moves.
+ */
+export function orbIsHero(layout: { keyboardOpen: boolean; contentHeight: number; roomHeight: number; heroHeight: number }): boolean {
+  return !layout.keyboardOpen && layout.contentHeight + layout.heroHeight <= layout.roomHeight;
+}
+
 // ── Utilities ──────────────────────────────────────────────────────────────
+
+function clampLevel(value: number): number {
+  return Math.min(1, Math.max(0, value));
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);

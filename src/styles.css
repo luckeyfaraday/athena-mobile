@@ -1151,7 +1151,15 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 /* ── JARVIS ────────────────────────────────────────────── */
 /* The voice assistant on one of the user's computers: a status header, the
    conversation as chat (reusing .conversation and .composer), and a talk button. */
-.jarvisView { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.jarvisView {
+  /* The orb's lens: the HUD's orb is glass made for a dark room, so it sits in one in every theme. */
+  --jarvis-lens: radial-gradient(circle at 50% 45%, #0d1a2b 0%, #070e19 62%, #04080f 100%);
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
 .jarvisView .errorBanner { margin-bottom: 4px; }
 .jarvisHead {
   flex: 0 0 auto;
@@ -1189,32 +1197,36 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .jarvisMic.on { border-color: color-mix(in srgb, var(--ok) 45%, transparent); background: var(--ok-soft); color: var(--ok); }
 .jarvisMic:active:not(:disabled) { background: var(--pressed); }
 
-/* Status orb: glows in the activity's color, moving while Jarvis listens, thinks, or speaks. */
-.jarvisOrb {
-  --orb: var(--accent);
-  position: relative;
-  width: 32px;
-  height: 32px;
+/* Jarvis's orb, from its desktop HUD: one canvas floating over its place, large in
+   the hero above a short conversation, small at the start of the header. */
+.jarvisOrbSlot {
   flex: 0 0 auto;
   border-radius: 50%;
-  background: radial-gradient(
-    circle at 34% 30%,
-    var(--orb) 0%,
-    color-mix(in srgb, var(--orb) 72%, transparent) 46%,
-    color-mix(in srgb, var(--orb) 30%, transparent) 100%
-  );
-  box-shadow: 0 0 0 1px color-mix(in srgb, var(--orb) 50%, transparent), 0 0 16px color-mix(in srgb, var(--orb) 38%, transparent);
+  background: var(--jarvis-lens);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--border-strong) 70%, transparent);
+  transition: width 0.32s ease, margin 0.32s ease, opacity 0.2s ease;
 }
-.jarvisOrb::after { content: ""; position: absolute; inset: -5px; border: 2px solid transparent; border-radius: 50%; }
-.jarvisOrb.idle { opacity: 0.8; }
-.jarvisOrb.listening { --orb: var(--ok); }
-.jarvisOrb.listening::after { border-color: color-mix(in srgb, var(--ok) 65%, transparent); animation: jarvisRing 1.4s ease-out infinite; }
-.jarvisOrb.thinking { --orb: var(--info); }
-.jarvisOrb.thinking::after { border-color: var(--info) transparent transparent; animation: usageSpin 0.9s linear infinite; }
-.jarvisOrb.speaking { animation: jarvisSpeak 0.7s ease-in-out infinite alternate; }
-.jarvisOrb.connecting { --orb: var(--warn); animation: usagePulse 1.2s ease-in-out infinite; }
-.jarvisOrb.offline,
-.jarvisOrb.unlicensed { background: var(--surface-3); box-shadow: 0 0 0 1px var(--border-strong); }
+/* While the orb is in the hero, the header's place for it closes up. */
+.jarvisHead.hero .jarvisOrbSlot { margin-right: -10px; opacity: 0; }
+/* The top of the conversation's own surface, so the orb stands in it rather than on a band of its own. */
+.jarvisHero { flex: 0 0 auto; display: grid; grid-template-rows: 0fr; background: var(--surface-1); transition: grid-template-rows 0.32s ease; }
+.jarvisHero.open { grid-template-rows: 1fr; }
+.jarvisHeroClip { min-height: 0; overflow: hidden; }
+.jarvisHeroStage {
+  height: 196px;
+  padding: 0 max(16px, env(safe-area-inset-right)) 0 max(16px, env(safe-area-inset-left));
+  display: grid;
+  place-items: center;
+}
+.jarvisHeroSlot {
+  width: 132px;
+  height: 132px;
+  border-radius: 50%;
+  background: var(--jarvis-lens);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--border-strong) 70%, transparent), 0 10px 40px -12px rgba(30, 120, 200, 0.35);
+}
+.jarvisOrbCanvas { position: absolute; top: 0; left: 0; z-index: 3; display: block; pointer-events: none; }
+.jarvisOrbCanvas.glide { transition: transform 0.32s ease, width 0.32s ease, height 0.32s ease; }
 
 .jarvisTime { align-self: center; margin: 4px 0 0; color: var(--text-faint); font-size: var(--fs-2xs); font-weight: var(--weight-medium); }
 .chatMessage.user.pending { opacity: 0.6; }
@@ -1302,13 +1314,6 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .jarvisFindings li { padding: 9px 12px; display: grid; gap: 2px; background: var(--surface-2); }
 .emptyState .jarvisFindings strong { font-family: var(--font-ui); font-size: var(--fs-md); font-weight: var(--weight-strong); }
 .jarvisFindings small { color: var(--text-muted); font-size: var(--fs-xs); line-height: 1.45; }
-@keyframes jarvisRing { from { transform: scale(0.8); opacity: 1; } to { transform: scale(1.3); opacity: 0; } }
-@keyframes jarvisSpeak {
-  to {
-    transform: scale(1.08);
-    box-shadow: 0 0 0 1px color-mix(in srgb, var(--orb) 60%, transparent), 0 0 26px color-mix(in srgb, var(--orb) 60%, transparent);
-  }
-}
 @keyframes jarvisDot { 0%, 60%, 100% { opacity: 0.3; transform: none; } 30% { opacity: 1; transform: translateY(-3px); } }
 @keyframes jarvisListen { from { box-shadow: 0 0 0 0 color-mix(in srgb, var(--ok) 45%, transparent); } to { box-shadow: 0 0 0 10px transparent; } }
 
@@ -1317,7 +1322,8 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 @keyframes usagePulse { 50% { opacity: 0.35; } }
 @media (prefers-reduced-motion: reduce) {
   .spinning, .usageStatus.status-loading i { animation: none; }
-  .jarvisOrb, .jarvisOrb::after, .jarvisTyping i, .jarvisTalk.listening { animation: none; }
+  .jarvisTyping i, .jarvisTalk.listening { animation: none; }
+  .jarvisOrbSlot, .jarvisHero, .jarvisOrbCanvas.glide { transition: none; }
   .usageFill { transition: none; }
   .sheet, .sheetBackdrop { animation: none; }
 }

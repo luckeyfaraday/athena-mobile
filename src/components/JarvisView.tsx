@@ -6,6 +6,7 @@ import {
   useMemo,
   useRef,
   useState,
+  type FocusEvent,
   type PointerEvent as ReactPointerEvent,
   type ReactNode,
 } from "react";
@@ -26,6 +27,7 @@ import {
   VolumeX,
 } from "lucide-react";
 import type { AppConfig } from "../config";
+import { JarvisOrb, type JarvisOrbHandle } from "./JarvisOrb";
 import {
   JarvisRequestError,
   askJarvis,
@@ -43,15 +45,21 @@ import {
   findingSummary,
   isGoodFinding,
   jarvisChat,
+  jarvisOrbState,
   jarvisStatus,
   jarvisStatusLabel,
   lastFeedId,
   locationName,
   newerState,
   openAsks,
+  orbIsHero,
   parseJarvisAudioEvent,
+  parseJarvisLevels,
   parseJarvisState,
+  smoothLevel,
+  voiceLevel,
   type JarvisAudioEvent,
+  type JarvisLevels,
   type JarvisChatItem,
   type JarvisLocation,
   type JarvisState,
@@ -82,6 +90,11 @@ const PENDING_MAX_MS = 60_000;
 const OPENING_MAX_MS = 45_000;
 // With no Jarvis found, look again this often while the screen is open.
 const MISSING_RECHECK_MS = 30_000;
+// The orb's canvas is this much larger than its place, so the blob fills the
+// place and its glow spills softly past it.
+const ORB_BLEED = 1.5;
+// The orb's place in the header; the hero's is sized in CSS.
+const ORB_SMALL_PX = 36;
 
 const STORAGE_KEYS = {
   location: "athena.jarvisLocation",
@@ -93,14 +106,22 @@ const STORAGE_KEYS = {
 } as const;
 
 export function JarvisView({ config }: { config: AppConfig }) {
-  // The stream's jarvis-audio events go to the voice hook, made below.
-  const hearAudio = useRef<(event: JarvisAudioEvent) => void>(() => undefined);
-  const link = useJarvisLink(config, hearAudio);
+  // The stream's jarvis-audio and jarvis-level events go to the voice hook and the orb, made below.
+  const streamEvents = useRef<StreamEvents>({ audio: () => undefined, levels: () => undefined });
+  const link = useJarvisLink(config, streamEvents);
   const { location, state, live } = link;
   const name = location ? locationName(location, state) : null;
   const status = jarvisStatus(state, live);
   const voice = useJarvisVoice(config, location);
-  hearAudio.current = voice.hear;
+  const orb = useRef<JarvisOrbHandle | null>(null);
+  streamEvents.current = {
+    audio: voice.hear,
+    levels: (levels) => {
+      // While Jarvis's voice plays here, the orb follows what the phone plays.
+      if (!voice.playing) orb.current?.setOutLevel(levels.out);
+      orb.current?.setMicLevel(levels.mic);
+    },
+  };
 
   const [pending, setPending] = useState<PendingAsk[]>([]);
   const [sending, setSending] = useState(false);
@@ -112,6 +133,7 @@ export function JarvisView({ config }: { config: AppConfig }) {
   const [heard, setHeard] = useState<string | null>(null);
   const draftBeforeTalk = useRef("");
   const press = useRef<number | null>(null);
+  const placement = useOrbPlacement(Boolean(location && state?.license.licensed && state.running));
 
   // Another Jarvis has its own feed (and feed ids).
   useEffect(() => {
@@ -232,6 +254,8 @@ export function JarvisView({ config }: { config: AppConfig }) {
 
   const banner = link.lost ? `Lost touch with Jarvis on ${name} (${link.lost}). Looking again…` : actionError;
   const fieldValue = heard !== null ? joinDraft(draftBeforeTalk.current, heard) : draft;
+  const orbState = jarvisOrbState(status, { micOpen: state.micOpen, playing: voice.playing, dictating: talk.listening });
+  const { hero, rect } = placement;
 
   let body: ReactNode;
   if (!state.license.licensed) {
@@ -309,9 +333,9 @@ export function JarvisView({ config }: { config: AppConfig }) {
   }
 
   return (
-    <section className="jarvisView">
-      <header className="jarvisHead">
-        <span className={`jarvisOrb ${status}`} aria-hidden="true" />
+    <section className="jarvisView" ref={placement.view} onFocus={placement.onFocus} onBlur={placement.onBlur}>
+      <header className={hero ? "jarvisHead hero" : "jarvisHead"} ref={placement.head}>
+        <span className="jarvisOrbSlot" style={{ width: hero ? 0 : ORB_SMALL_PX, height: ORB_SMALL_PX }} aria-hidden="true" />
         <div className="jarvisHeadText">
           <strong>
             Jarvis <span className={`jarvisStatus ${status}`}>{jarvisStatusLabel(status)}</span>
@@ -344,10 +368,119 @@ export function JarvisView({ config }: { config: AppConfig }) {
           </button>
         </div>
       </header>
+      {state.running && state.license.licensed && (
+        <div className={hero ? "jarvisHero open" : "jarvisHero"} aria-hidden="true">
+          <div className="jarvisHeroClip">
+            <div className="jarvisHeroStage" ref={placement.heroStage}>
+              <span className="jarvisHeroSlot" ref={placement.heroSlot} />
+            </div>
+          </div>
+        </div>
+      )}
       {banner && <div className="errorBanner">{banner}</div>}
       {body}
+      <JarvisOrb
+        ref={orb}
+        className={placement.glide ? "jarvisOrbCanvas glide" : "jarvisOrbCanvas"}
+        style={rect ? { width: rect.size, height: rect.size, transform: `translate3d(${rect.x}px, ${rect.y}px, 0)` } : { visibility: "hidden" }}
+        state={orbState}
+        standby={!hero && (orbState === "idle" || orbState === "muted")}
+        sampleOut={voice.outLevel}
+      />
     </section>
   );
+}
+
+/**
+ * Where the orb is: large in the hero above a conversation short enough to
+ * fit under it, or small at the start of the header once the conversation
+ * grows or the keyboard opens. One canvas floats over both places and glides
+ * between them, so there's one orb and one GPU context, never rebuilt.
+ */
+function useOrbPlacement(conversation: boolean) {
+  const view = useRef<HTMLElement | null>(null);
+  const head = useRef<HTMLElement | null>(null);
+  const heroStage = useRef<HTMLDivElement | null>(null);
+  const heroSlot = useRef<HTMLSpanElement | null>(null);
+  const [hero, setHero] = useState(false);
+  const [rect, setRect] = useState<{ x: number; y: number; size: number } | null>(null);
+  // It glides only once it has a place, rather than flying in from the corner.
+  const [glide, setGlide] = useState(false);
+  // On a phone, typing means the keyboard is up and the screen is short.
+  const [typing, setTyping] = useState(false);
+
+  const measure = useCallback(() => {
+    const root = view.current;
+    const header = head.current;
+    if (!root || !header) return;
+    const list = root.querySelector<HTMLElement>(".conversationList");
+    const stage = heroStage.current;
+    const clip = stage?.parentElement;
+    const nextHero = Boolean(
+      conversation &&
+        list &&
+        stage &&
+        clip &&
+        orbIsHero({
+          keyboardOpen: typing,
+          contentHeight: contentHeight(list),
+          roomHeight: list.clientHeight + clip.getBoundingClientRect().height,
+          heroHeight: stage.offsetHeight,
+        }),
+    );
+    setHero(nextHero);
+    let center: { x: number; y: number; size: number };
+    const slot = nextHero ? heroSlot.current?.getBoundingClientRect() : null;
+    if (slot) {
+      center = { x: slot.left + slot.width / 2, y: slot.top + slot.height / 2, size: slot.width };
+    } else {
+      // The header's slot is still growing back while the orb heads there, so go by where it ends up.
+      const bounds = header.getBoundingClientRect();
+      const left = bounds.left + parseFloat(getComputedStyle(header).paddingLeft);
+      center = { x: left + ORB_SMALL_PX / 2, y: bounds.top + bounds.height / 2, size: ORB_SMALL_PX };
+    }
+    const origin = root.getBoundingClientRect();
+    const size = Math.round(center.size * ORB_BLEED);
+    const next = { x: Math.round(center.x - origin.left - size / 2), y: Math.round(center.y - origin.top - size / 2), size };
+    setRect((current) => (current && current.x === next.x && current.y === next.y && current.size === next.size ? current : next));
+  }, [conversation, typing]);
+
+  useLayoutEffect(measure);
+
+  useEffect(() => {
+    const root = view.current;
+    if (!root || typeof ResizeObserver !== "function") return;
+    const observer = new ResizeObserver(() => measure());
+    observer.observe(root);
+    return () => observer.disconnect();
+  }, [measure]);
+
+  useEffect(() => {
+    if (!rect || glide) return;
+    const frame = window.requestAnimationFrame(() => setGlide(true));
+    return () => window.cancelAnimationFrame(frame);
+  }, [rect, glide]);
+
+  return {
+    view,
+    head,
+    heroStage,
+    heroSlot,
+    hero,
+    rect,
+    glide,
+    onFocus: (event: FocusEvent<HTMLElement>) => setTyping(event.target instanceof HTMLTextAreaElement),
+    onBlur: () => setTyping(false),
+  };
+}
+
+// The conversation's own height, however much room its list has.
+function contentHeight(list: HTMLElement): number {
+  const first = list.firstElementChild;
+  const last = list.lastElementChild;
+  if (!first || !last) return 0;
+  const style = getComputedStyle(list);
+  return last.getBoundingClientRect().bottom - first.getBoundingClientRect().top + parseFloat(style.paddingTop) + parseFloat(style.paddingBottom);
 }
 
 function JarvisConversation({
@@ -543,7 +676,10 @@ function JarvisMissing({ search, searching, onSearch }: { search: JarvisSearch |
  * it showed) is remembered, so reopening paints at once and asks there first.
  * Live updates run only while this screen is open and the app is in front.
  */
-function useJarvisLink(config: AppConfig, onAudio: { current: (event: JarvisAudioEvent) => void }) {
+/** What the event stream carries besides Jarvis's state. */
+type StreamEvents = { audio: (event: JarvisAudioEvent) => void; levels: (levels: JarvisLevels) => void };
+
+function useJarvisLink(config: AppConfig, events: { current: StreamEvents }) {
   const saved = useMemo(loadSaved, []);
   const [location, setLocation] = useState<JarvisLocation | null>(saved.location);
   const [state, setState] = useState<JarvisState | null>(saved.state);
@@ -672,7 +808,12 @@ function useJarvisLink(config: AppConfig, onAudio: { current: (event: JarvisAudi
       // A sentence of a reply in Jarvis's own voice, for the phone to fetch and play.
       current.addEventListener("jarvis-audio", (event) => {
         const audio = parseJarvisAudioEvent(parseJson((event as MessageEvent<string>).data));
-        if (audio && source === current) onAudio.current(audio);
+        if (audio && source === current) events.current.audio(audio);
+      });
+      // How loud Jarvis is speaking, and hearing, at its computer: for the orb.
+      current.addEventListener("jarvis-level", (event) => {
+        const levels = parseJarvisLevels(parseJson((event as MessageEvent<string>).data));
+        if (levels && source === current) events.current.levels(levels);
       });
       // A dropped or refused stream: poll instead, and try the stream again later.
       current.addEventListener("error", () => {
@@ -728,7 +869,10 @@ const EARLY_AUDIO_MAX = 64;
  * event stream) shows as text only; the phone has no voice of its own.
  */
 function useJarvisVoice(config: AppConfig, location: JarvisLocation | null) {
-  const player = useMemo(() => new VoicePlayer(), []);
+  // Whether Jarvis's voice is playing here right now, for the orb.
+  const [playing, setPlaying] = useState(false);
+  const player = useMemo(() => new VoicePlayer(setPlaying), []);
+  const smoothed = useRef(0);
   // On by default: asking from the phone means listening on it, as the computer stays quiet.
   const [enabled, setEnabled] = useState(() => player.supported && loadPersisted<boolean>(STORAGE_KEYS.voice, true) !== false);
   const reply = useRef<PhoneReply | null>(null);
@@ -776,6 +920,13 @@ function useJarvisVoice(config: AppConfig, location: JarvisLocation | null) {
   return {
     supported: player.supported,
     enabled,
+    playing,
+    /** How loud Jarvis's voice is as it plays here (on Jarvis's own scale, smoothed), or null while it isn't. */
+    outLevel: (): number | null => {
+      const level = player.level();
+      smoothed.current = level === null ? 0 : smoothLevel(smoothed.current, level);
+      return level === null ? null : smoothed.current;
+    },
     toggle: () => {
       if (!player.supported) return;
       if (enabled) player.stop();
@@ -828,20 +979,35 @@ const START_LEAD_S = 0.05;
  * Plays reply sentences back to back through one AudioContext. Phone browsers
  * (iOS above all) only let audio start from a tap, so the context is made or
  * resumed during one and plays a moment of silence; after that, sentences can
- * start whenever they arrive.
+ * start whenever they arrive. Everything plays through an analyser, which is
+ * how the orb hears how loud Jarvis is.
  */
 class VoicePlayer {
   readonly supported = audioContextConstructor() !== null;
   private context: AudioContext | null = null;
+  private analyser: AnalyserNode | null = null;
+  private samples = new Float32Array(0);
   private readonly playing = new Set<AudioBufferSourceNode>();
+  private reported = false;
   // When the last scheduled sentence ends, in the context's clock.
   private until = 0;
+  private readonly onPlaying: (playing: boolean) => void;
+
+  constructor(onPlaying: (playing: boolean) => void) {
+    this.onPlaying = onPlaying;
+  }
 
   unlock(): void {
     const Context = audioContextConstructor();
     if (!Context) return;
     try {
-      this.context ??= new Context();
+      if (!this.context) {
+        this.context = new Context();
+        this.analyser = this.context.createAnalyser();
+        this.analyser.fftSize = 1024;
+        this.analyser.connect(this.context.destination);
+        this.samples = new Float32Array(this.analyser.fftSize);
+      }
       void this.context.resume().catch(() => undefined);
       const silence = this.context.createBufferSource();
       silence.buffer = this.context.createBuffer(1, 1, this.context.sampleRate);
@@ -865,12 +1031,23 @@ class VoicePlayer {
     if (context.state !== "running") void context.resume().catch(() => undefined);
     const source = context.createBufferSource();
     source.buffer = buffer;
-    source.connect(context.destination);
+    source.connect(this.analyser ?? context.destination);
     const at = Math.max(this.until, context.currentTime + START_LEAD_S);
-    source.onended = () => this.playing.delete(source);
+    source.onended = () => {
+      this.playing.delete(source);
+      this.report();
+    };
     source.start(at);
     this.playing.add(source);
     this.until = at + buffer.duration;
+    this.report();
+  }
+
+  /** How loud what's playing is right now, on Jarvis's scale; null while nothing plays. */
+  level(): number | null {
+    if (!this.analyser || this.playing.size === 0) return null;
+    this.analyser.getFloatTimeDomainData(this.samples);
+    return voiceLevel(this.samples);
   }
 
   stop(): void {
@@ -883,12 +1060,21 @@ class VoicePlayer {
     }
     this.playing.clear();
     this.until = 0;
+    this.report();
   }
 
   close(): void {
     this.stop();
     void this.context?.close().catch(() => undefined);
     this.context = null;
+    this.analyser = null;
+  }
+
+  private report(): void {
+    const playing = this.playing.size > 0;
+    if (playing === this.reported) return;
+    this.reported = playing;
+    this.onPlaying(playing);
   }
 }
 
