@@ -11,6 +11,7 @@ with headless Athena) and opened from the phone over Tailscale, that lets you:
 - get Web Push notifications when an agent is waiting on an answer, finishes a long turn, or crashes
 - see how much of each Claude and Codex subscription window is used, per signed-in account
 - switch to another computer running Athena on your tailnet and do all of the above there
+- talk to Jarvis, your licensed voice assistant, from anywhere: type or speak to it, and follow what it hears and says
 - match desktop Athena's look, with the same 13 themes, or follow the host's desktop theme
 
 It talks to Athena only through Athena's existing HTTP APIs: the FastAPI backend
@@ -110,6 +111,58 @@ Overrides: `ATHENA_REMOTE_PORT` if the machines use a different remote port,
 `ATHENA_USER_DATA` if desktop Athena's settings folder isn't the default
 (`~/.config/context-workspace-client` on Linux).
 
+## Jarvis
+
+The Jarvis tab talks to Jarvis, the voice assistant on one of your computers,
+through Athena there (`/jarvis` on its control API). Jarvis can drive agents on
+all your machines and ask Hermes, so this is "talk to Jarvis from anywhere":
+
+- Jarvis's orb from its desktop HUD (vendored in `src/vendor/jarvis-orb`):
+  large above a short conversation, small in the header once it grows or the
+  keyboard opens. It listens, thinks and speaks as Jarvis does, moves with
+  Jarvis's voice and microphone levels at the computer and with its voice
+  playing on the phone, and draws only while it's on screen (a breathing disc
+  where WebGL2 isn't available)
+- what Jarvis hears and says, live, as a chat; announcements and agent events
+  as compact rows; what its microphone is hearing right now
+- a text field, and a talk button that uses the phone's own speech
+  recognition (in English, whatever the phone's language): hold it and
+  release to send, or tap it and pause
+- the microphone on Jarvis's computer on or off ("PC mic"), and "Open Jarvis
+  on …" when it isn't running there
+- replies in Jarvis's own voice: what you ask from the phone is answered on
+  the phone only, so Jarvis's computer stays quiet, and each sentence plays
+  as soon as it arrives. The speaker button ("Play Jarvis's voice on this
+  phone", on by default) mutes it. A reply that comes without audio (a
+  Jarvis that only sends text, an Athena too old to serve it, or while the
+  event stream is down and the app is polling) shows as text only; the phone
+  never reads replies in a voice of its own
+
+The app finds Jarvis by asking, in order: the `/athena-jarvis` mount (below),
+Athena on the host serving the app, then every ready machine in the machine
+switcher. A machine where Jarvis is licensed and running wins, then one where
+it's licensed. Otherwise the tab says what each machine answered: no license
+("Jarvis is for Jarvis license holders"), Jarvis not installed, or an Athena too
+old to serve Jarvis. The last place Jarvis answered is tried first next time,
+and the search runs again if it stops answering. Updates stream over SSE while
+the tab is open and the app is in front, with polling every 2 s if the stream
+fails.
+
+To point the host straight at one machine (say Jarvis's laptop isn't in the
+switcher), set `ATHENA_JARVIS_TARGET` to that Athena's control API and
+`ATHENA_JARVIS_TOKEN` to its access token if it needs one:
+
+```bash
+ATHENA_JARVIS_TARGET=http://100.101.102.103:47821 ATHENA_JARVIS_TOKEN=… npm start
+```
+
+The target must be plain `http://` on loopback or Tailscale (`100.64.0.0/10`,
+`fd7a:115c:a1e0::/48`, or a `*.ts.net` name); anything else is refused at
+startup with a log line, and the mount stays off. Only `/jarvis` routes are
+forwarded. Speaking to Jarvis from the phone needs HTTPS (`tailscale serve`, see
+below): browsers only allow speech recognition in a secure context, so over
+plain `http://` the talk button is hidden and typing still works.
+
 ## Host on an always-on server
 
 Served next to a headless Athena server (`athena server run --data-dir DIR`,
@@ -193,6 +246,7 @@ and mounts the same local endpoints used in development:
 - `/athena-backend` proxies to Athena backend discovery from `~/.context-workspace/backend.json` (or `$ATHENA_SERVER_DATA_DIR/backend.json`).
 - `/athena-control` proxies to Electron control discovery from `~/.context-workspace/electron-control.json` (or the server data folder).
 - `/athena-remote` lists other machines on the tailnet and forwards to their Athena (see "Other machines").
+- `/athena-jarvis` forwards to the Athena at `ATHENA_JARVIS_TARGET` when it's set (see "Jarvis").
 - `/athena-push` handles Web Push enrollment and notifications.
 
 Expose it privately with Tailscale HTTPS:
